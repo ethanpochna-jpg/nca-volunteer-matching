@@ -1954,6 +1954,23 @@ def render_input_stage():
             st.warning("Please describe your volunteer need before submitting.")
             return
 
+        # Fix 4: date-pair guard.  A notification date after the target
+        # date drives the notice window negative, which silently blocks
+        # the entire roster on the (deliberately hard) Notice Period
+        # check — surface it at submit instead.
+        if has_specific_date and target_date and notification_date > target_date:
+            st.error(
+                "Notification date is after the target date — the notice "
+                "window would be negative and no volunteer could match. "
+                "Adjust one of the dates."
+            )
+            return
+        if notification_date < date.today():
+            st.warning(
+                "Notification date is in the past — backdating inflates "
+                "the notice window and can overstate volunteer availability."
+            )
+
         initial_state = {
             "user_prompt": user_prompt.strip(),
             "form_certs": form_certs,
@@ -2005,6 +2022,19 @@ def render_skills_review_stage():
     # Show soft preferences if any were extracted
     if state.get("soft_preferences"):
         st.info(f"**Soft preferences detected:** {state['soft_preferences']}")
+
+    # Fix 4: make the notice window visible before matching runs, so a
+    # thin result set is explainable against volunteers' minimum notice.
+    if state.get("has_specific_date") and state.get("target_date"):
+        try:
+            _target = date.fromisoformat(str(state["target_date"]))
+            _notify = date.fromisoformat(str(state["notification_date"]))
+            st.caption(
+                f"🗓️ Notice window: {(_target - _notify).days} day(s) "
+                f"between notification and target date."
+            )
+        except (ValueError, TypeError):
+            pass
 
     # Show need sets
     with st.expander("📦 Need Sets", expanded=True):

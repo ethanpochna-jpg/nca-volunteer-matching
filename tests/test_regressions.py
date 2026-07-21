@@ -407,3 +407,44 @@ class TestFix6SoftPreferenceDetector:
         ).iloc[0]
         violations = app.summarize_soft_preference_violations(ns, row)
         assert violations == ["Does not match preferred time block: Morning"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 4: date-pair validation + notice visibility
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix4DateGuard:
+    def test_inverted_dates_block_whole_roster_documented(self, app):
+        """Failure-mode documentation: notification AFTER target drives the
+        notice window negative and (correctly, per D2 — the check stays
+        hard) blocks every volunteer on Notice Period.  The UI submit
+        guard exists to stop this state from ever reaching the matcher;
+        golden scenario G4 verifies it live in Phase 5.
+        """
+        roster = roster_frame(
+            make_volunteer("V-0001", "Zero", min_notice_days=0),
+            make_volunteer("V-0002", "Week", min_notice_days=7),
+        )
+        result = run_matching_defaults(
+            app, make_need_set(), roster,
+            has_specific_date=True,
+            target_date_str="2026-08-01",
+            notification_date_str="2026-08-05",   # after the target
+        )
+        assert result["matched"] == []
+        blocked = result["counterfactuals"].get("Notice Period", [])
+        assert {b["volunteer_id"] for b in blocked} == {"V-0001", "V-0002"}
+
+    def test_submit_guard_present_in_input_stage(self, app):
+        """Tripwire: the submit-handler guard must not be refactored away.
+        (Behavior itself is browser-verified in G4 — widgets don't run
+        meaningfully under bare mode.)"""
+        import inspect
+        src = inspect.getsource(app.render_input_stage)
+        assert "notification_date > target_date" in src
+        assert "notification_date < date.today()" in src
+
+    def test_notice_window_shown_on_review_stage(self, app):
+        import inspect
+        src = inspect.getsource(app.render_skills_review_stage)
+        assert "Notice window" in src
