@@ -118,8 +118,6 @@ def run_matching_defaults(app, need_set, roster_df, assignments_df=None, **overr
     """Call app.run_matching with neutral defaults; override any kwarg.
 
     Keeps individual tests focused on the one requirement they exercise.
-    NOTE: passes is_recurring only until fix 12 removes it from the
-    signature; the helper is updated in that commit.
     """
     kwargs = {
         "need_set": need_set,
@@ -129,7 +127,6 @@ def run_matching_defaults(app, need_set, roster_df, assignments_df=None, **overr
         "has_specific_date": False,
         "target_date_str": None,
         "notification_date_str": "2026-07-21",
-        "is_recurring": False,
         "roster_df": roster_df,
         "assignments_df": assignments_frame() if assignments_df is None else assignments_df,
     }

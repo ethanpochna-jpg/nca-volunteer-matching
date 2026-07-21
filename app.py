@@ -1027,7 +1027,6 @@ def run_matching(
     has_specific_date: bool,
     target_date_str: Optional[str],
     notification_date_str: str,
-    is_recurring: bool,
     roster_df: pd.DataFrame,
     assignments_df: pd.DataFrame,
 ) -> dict:
@@ -1449,7 +1448,6 @@ def match_volunteers_node(state: GraphState) -> dict:
             has_specific_date=state["has_specific_date"],
             target_date_str=state["target_date"],
             notification_date_str=state["notification_date"],
-            is_recurring=state.get("is_recurring", False),
             roster_df=available_roster,
             assignments_df=assignments,
         )

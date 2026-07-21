@@ -169,3 +169,30 @@ class TestFix10SkillsCanonicalization:
             confirmed_skills=["Pantry Operations"],
         )
         assert result["margins"]["V-0001"]["extra_skills"] == ["Driver"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 12: is_recurring dropped from the matcher signature
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix12IsRecurringRemoval:
+    def test_run_matching_signature_lacks_is_recurring(self, app):
+        """The parameter was never read in the body — dead weight removed.
+
+        Its real use point arrives in Phase 2 (S3 scorer context line).
+        """
+        import inspect
+        params = inspect.signature(app.run_matching).parameters
+        assert "is_recurring" not in params
+        assert list(params) == [
+            "need_set", "confirmed_skills", "form_certs", "form_languages",
+            "has_specific_date", "target_date_str", "notification_date_str",
+            "roster_df", "assignments_df",
+        ]
+
+    def test_field_survives_in_state_and_record_paths(self, app):
+        """Form/state/record keep the flag (D4) — only the matcher lost it."""
+        assert "is_recurring" in app.GraphState.__annotations__
+        import inspect
+        record_src = inspect.getsource(app.write_request_record_node)
+        assert "is_recurring" in record_src
