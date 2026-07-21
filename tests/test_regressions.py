@@ -983,6 +983,116 @@ class TestS5AssemblyAndCleanup:
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S6: on-demand reasoning + dissent detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS6DissentDetector:
+    def test_leading_phrase_is_dissent(self, app):
+        assert app.detect_dissent("On second thought, Ada is not perfect.")
+        assert app.detect_dissent("on second thought — a Good fit at best.")
+        assert app.detect_dissent("ON SECOND THOUGHT...")
+
+    def test_leading_quotes_and_curly_punctuation_tolerated(self, app):
+        assert app.detect_dissent('"On second thought, reconsider."')
+        assert app.detect_dissent("“On second thought… not quite.”")
+        assert app.detect_dissent("  'On second thought, no.'")
+
+    def test_plain_agreement_is_not_dissent(self, app):
+        assert not app.detect_dissent("Ada is a perfect fit for this role.")
+        assert not app.detect_dissent("")
+        assert not app.detect_dissent(None)
+
+    def test_mid_text_mention_is_not_dissent(self, app):
+        assert not app.detect_dissent(
+            "Ada fits well. On second thought, she also drives."
+        )
+
+
+class TestS6FetchReasoning:
+    def test_cache_prevents_duplicate_calls_on_rerun(self, app, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_reasoning(bundle, system_prompt):
+            calls["n"] += 1
+            return "A fine fit."
+
+        monkeypatch.setattr(app, "call_reasoning", fake_reasoning)
+        cache = {}
+        first = app.fetch_reasoning("bundle", "Good Match", cache, ("t", "V-1"))
+        again = app.fetch_reasoning("bundle", "Good Match", cache, ("t", "V-1"))
+        other = app.fetch_reasoning("bundle", "Good Match", cache, ("t", "V-2"))
+        assert calls["n"] == 2
+        assert first is again
+        assert other["text"] == "A fine fit."
+
+    def test_event_carries_dissent_flag_and_model(self, app, monkeypatch):
+        monkeypatch.setattr(
+            app, "call_reasoning",
+            lambda bundle, prompt: "On second thought, merely good.",
+        )
+        event = app.fetch_reasoning("b", "Perfect Match", {}, ("t", "V-1"))
+        assert event["dissent"] is True
+        assert event["tier"] == "Perfect Match"   # I5: tier untouched
+        assert event["model"] == app.REASONING_MODEL
+
+    def test_tier_prompt_selected_by_tier(self, app, monkeypatch):
+        seen_prompts = []
+
+        def fake_reasoning(bundle, system_prompt):
+            seen_prompts.append(system_prompt)
+            return "ok"
+
+        monkeypatch.setattr(app, "call_reasoning", fake_reasoning)
+        app.fetch_reasoning("b", "Technical Match", {}, ("t", "V-1"))
+        assert seen_prompts[0] == app.REASONING_TIER_PROMPTS["Technical Match"]
+
+
+class TestS6BundleAndPrompts:
+    def test_bundle_contains_scores_and_tier(self, app):
+        vol = roster_frame(make_volunteer("V-0001", "Ada")).iloc[0]
+        rec = {
+            "volunteer_id": "V-0001", "tier": "Good Match", "reasoning": "",
+            "raw_selections": [5, 4, 3, 2],
+            "boxes": ["T2B", "T2B", "Neutral", "B2B"],
+            "total_score": 6, "caps_applied": [],
+        }
+        bundle = app.build_reasoning_bundle(
+            "Need a helper", "General help", "prefers weekends", vol, rec,
+        )
+        assert "Good Match" in bundle
+        assert "overall_fit: 5 (T2B)" in bundle
+        assert "recommendation: 2 (B2B)" in bundle
+        assert "Total score: 6" in bundle
+        assert "Ada" in bundle and "prefers weekends" in bundle
+
+    def test_bundle_notes_unavailable_scoring(self, app):
+        vol = roster_frame(make_volunteer("V-0001", "Ada")).iloc[0]
+        rec = {"volunteer_id": "V-0001", "tier": "Technical Match",
+               "reasoning": app.SCORING_UNAVAILABLE_NOTE,
+               "raw_selections": None, "boxes": None, "total_score": None}
+        bundle = app.build_reasoning_bundle("R", "NS", "", vol, rec)
+        assert "unavailable" in bundle
+
+    def test_tier_prompts_verbatim_anchors(self, app):
+        perfect = app.REASONING_TIER_PROMPTS["Perfect Match"]
+        assert perfect.startswith(
+            "Review why this respondent is a perfect fit"
+        )
+        for tier_prompt in app.REASONING_TIER_PROMPTS.values():
+            assert 'preface your reasoning with, "On second thought..."' \
+                in tier_prompt
+        assert set(app.REASONING_TIER_PROMPTS) == {
+            "Perfect Match", "Good Match", "Technical Match",
+        }  # D-H: Almost Match has no prompt and no button
+
+    def test_ui_gates_button_away_from_almost_cards(self, app):
+        import inspect
+        src = inspect.getsource(app.render_results_stage)
+        assert "Get reasoning" in src
+        assert 'if tier == "Almost Match"' in src
+
+
 class TestS1MigrationComplete:
     def test_no_langchain_or_old_recommender_remnants(self, app):
         """PLAN Phase 2 exit grep, enforced early: the old single-call
