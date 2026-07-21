@@ -355,3 +355,55 @@ class TestFix5MarginStorage:
         Spanish as extra for the volunteer matched on the Spanish slot."""
         out = self._dual_match_output(app, monkeypatch)
         assert out["margins"]["V-CAI"]["extra_languages"] == ["English"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 6: word-boundary soft-preference detector
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix6SoftPreferenceDetector:
+    def _weekday_volunteer_row(self):
+        """A volunteer available Tue only — violates any Monday preference."""
+        return roster_frame(
+            make_volunteer("V-0001", "TueOnly", availability_days="Tue"),
+        ).iloc[0]
+
+    def test_prefer_monday_fires_exactly_once(self, app):
+        """Old substring logic hit both the 'mon' and 'monday' aliases."""
+        ns = make_need_set(description="We prefer monday sessions")
+        violations = app.summarize_soft_preference_violations(
+            ns, self._weekday_volunteer_row()
+        )
+        assert violations == ["Does not match preferred day: Mon"]
+
+    def test_prefer_monetary_donations_no_false_positive(self, app):
+        """'monetary' must not trigger via the 'mon' alias."""
+        ns = make_need_set(description="We prefer monetary donations")
+        violations = app.summarize_soft_preference_violations(
+            ns, self._weekday_volunteer_row()
+        )
+        assert violations == []
+
+    def test_prefers_mondays_plural_and_inflection(self, app):
+        """'prefers mondays' — inflected signal word + plural day."""
+        ns = make_need_set(description="The team prefers mondays")
+        violations = app.summarize_soft_preference_violations(
+            ns, self._weekday_volunteer_row()
+        )
+        assert violations == ["Does not match preferred day: Mon"]
+
+    def test_satisfied_preference_yields_no_violation(self, app):
+        ns = make_need_set(description="We prefer tuesday sessions")
+        violations = app.summarize_soft_preference_violations(
+            ns, self._weekday_volunteer_row()
+        )
+        assert violations == []
+
+    def test_time_block_preference_word_bounded(self, app):
+        ns = make_need_set(description="Ideally mornings for setup")
+        row = roster_frame(
+            make_volunteer("V-0001", "Eve", availability_days="Mon",
+                           availability_time_blocks="Evening"),
+        ).iloc[0]
+        violations = app.summarize_soft_preference_violations(ns, row)
+        assert violations == ["Does not match preferred time block: Morning"]

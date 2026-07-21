@@ -995,7 +995,14 @@ def summarize_soft_preference_violations(need_set: dict, vol_row: pd.Series) -> 
     """
     desc = str(need_set.get("description", "") or "")
     desc_l = desc.lower()
-    if not any(token in desc_l for token in ["prefer", "preferred", "ideally"]):
+
+    # Fix 6: word-boundary regexes, one per CANONICAL value.  Substring
+    # matching double-fired ("prefer monday" hit both the "mon" and
+    # "monday" aliases) and false-positived ("prefer monetary donations"
+    # hit "mon").  These violations feed the Phase 2 tier caps, so
+    # precision matters.
+    signal = r"(?:prefer(?:red|s)?|ideally)"
+    if not re.search(rf"\b{signal}\b", desc_l):
         return []
 
     violations = []
@@ -1004,17 +1011,22 @@ def summarize_soft_preference_violations(need_set: dict, vol_row: pd.Series) -> 
         vol_row.get("availability_time_blocks", ""), domain="time_blocks"
     )
 
-    day_map = VALUE_ALIASES.get("days", {})
-    for raw, norm in day_map.items():
-        if f"prefer {raw}" in desc_l or f"ideally {raw}" in desc_l:
-            if norm not in vol_days:
-                violations.append(f"Does not match preferred day: {norm}")
+    aliases_by_day: dict[str, list[str]] = {}
+    for raw, norm in VALUE_ALIASES.get("days", {}).items():
+        aliases_by_day.setdefault(norm, []).append(raw)
+
+    for norm in VALID_DAYS:                     # canonical order, one hit max
+        aliases = sorted(aliases_by_day.get(norm, []), key=len, reverse=True)
+        if not aliases:
+            continue
+        pattern = rf"\b{signal}\s+(?:{'|'.join(map(re.escape, aliases))})s?\b"
+        if re.search(pattern, desc_l) and norm not in vol_days:
+            violations.append(f"Does not match preferred day: {norm}")
 
     for block in VALID_TIME_BLOCKS:
-        bl = block.lower()
-        if f"prefer {bl}" in desc_l or f"ideally {bl}" in desc_l:
-            if block not in vol_blocks:
-                violations.append(f"Does not match preferred time block: {block}")
+        pattern = rf"\b{signal}\s+{block.lower()}s?\b"
+        if re.search(pattern, desc_l) and block not in vol_blocks:
+            violations.append(f"Does not match preferred time block: {block}")
 
     return violations
 
