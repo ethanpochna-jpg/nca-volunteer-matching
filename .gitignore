@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+requests.db
+requests.db-wal
+requests.db-shm
+.streamlit/secrets.toml
+.venv/
+.pytest_cache/
