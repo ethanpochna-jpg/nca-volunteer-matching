@@ -1488,9 +1488,18 @@ def match_volunteers_node(state: GraphState) -> dict:
             "need_set_description": need_set.get("description", ""),
             "count_needed": need_set.get("count", 1),
             "matched_volunteer_ids": ns_matched,
+            # Fix 5: margins stored per need-set group (rides inside
+            # matched_volunteers_json — no new record column).
+            "margins": match_result["margins"],
         })
 
-        all_margins.update(match_result["margins"])
+        # Fix 5: the flat dict is display-only and FIRST-wins.  Need sets
+        # are ordered most-constrained first, so the first group's margins
+        # are the meaningful ones; update() let a later, laxer need set
+        # overwrite them (executed proof: Spanish displayed as an "extra"
+        # language against the need set that REQUIRED Spanish).
+        for vid, margin in match_result["margins"].items():
+            all_margins.setdefault(vid, margin)
 
         for req_name, blocked in match_result["counterfactuals"].items():
             key = f"NS{ns_idx}: {req_name}"

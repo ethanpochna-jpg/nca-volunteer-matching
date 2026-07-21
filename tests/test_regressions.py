@@ -314,3 +314,44 @@ class TestFix3ScarcityAwareClaiming:
         assert out["matched_volunteers"][0]["matched_volunteer_ids"] == [
             "V-0001", "V-0002", "V-0003"
         ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 5: per-group margins, first-wins flat view
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix5MarginStorage:
+    def _dual_match_output(self, app, monkeypatch):
+        """Cai (Spanish+English) matches BOTH need sets.
+
+        Dev (Spanish only) is exclusive to the Spanish pool, so scarcity
+        claiming takes Dev for the Spanish slot and Cai's margins appear
+        under both need sets — the collision fix 5 addresses.
+        """
+        roster = roster_frame(
+            make_volunteer("V-CAI", "Cai", languages="Spanish;English"),
+            make_volunteer("V-DEV", "Dev", languages="Spanish"),
+            make_volunteer("V-ANA", "Ana", languages="English"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(need_sets=[
+            make_need_set(description="Spanish intake",
+                          languages={"AND": ["Spanish"], "OR": []}),
+            make_need_set(description="English-speaking helper",
+                          languages={"AND": ["English"], "OR": []}),
+        ])
+        return app.match_volunteers_node(state)
+
+    def test_margins_nested_per_group(self, app, monkeypatch):
+        out = self._dual_match_output(app, monkeypatch)
+        spanish_ns, english_ns = out["matched_volunteers"]
+        # Against the Spanish-requiring need set, Spanish is NOT extra.
+        assert spanish_ns["margins"]["V-CAI"]["extra_languages"] == ["English"]
+        # Against the English-requiring need set, Spanish IS extra.
+        assert english_ns["margins"]["V-CAI"]["extra_languages"] == ["Spanish"]
+
+    def test_flat_view_first_need_set_wins(self, app, monkeypatch):
+        """The executed proof: the flat display margins must not report
+        Spanish as extra for the volunteer matched on the Spanish slot."""
+        out = self._dual_match_output(app, monkeypatch)
+        assert out["margins"]["V-CAI"]["extra_languages"] == ["English"]
