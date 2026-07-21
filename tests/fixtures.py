@@ -43,7 +43,10 @@ def make_volunteer(volunteer_id: str, preferred_name: str, **overrides) -> dict:
 
 def roster_frame(*volunteers: dict) -> pd.DataFrame:
     """Roster DataFrame in post-load shape (numerics coerced, ids stripped)."""
-    df = pd.DataFrame(list(volunteers))
+    if not volunteers:
+        df = pd.DataFrame(columns=list(_VOLUNTEER_DEFAULTS))
+    else:
+        df = pd.DataFrame(list(volunteers))
     df["max_hours_per_week"] = pd.to_numeric(df["max_hours_per_week"], errors="coerce").fillna(40)
     df["min_notice_days"] = pd.to_numeric(df["min_notice_days"], errors="coerce").fillna(0)
     df["volunteer_id"] = df["volunteer_id"].astype(str).str.strip()

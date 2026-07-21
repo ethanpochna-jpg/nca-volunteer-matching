@@ -13,7 +13,7 @@
 ║                                    │                                  │    ║
 ║                     match_volunteers ◄────────────────────────────────┘    ║
 ║                           │                                                ║
-║                     recommend_volunteers                                   ║
+║                     score_volunteers  (Likert waves)                       ║
 ║                           │                                                ║
 ║                     write_request_record                                   ║
 ║                           │                                                ║
@@ -57,8 +57,11 @@ import streamlit as st          # UI framework for the multi-step form interface
 import pandas as pd             # Tabular data handling for roster and assignments
 import json                     # Serialization for LLM outputs and request records
 import os                       # File-existence checks for data files
+import random                   # Jitter for the scorer's single per-item retry
 import re                       # Multi-delimiter parsing for roster fields
+import time                     # Backoff sleep for the scorer's single retry
 import uuid                     # Unique IDs for graph threads and request records
+from concurrent.futures import ThreadPoolExecutor  # 16-call scoring waves
 from datetime import date, datetime, timedelta  # Date arithmetic for notice periods
 from typing import TypedDict, Optional, Literal # Type hints for graph state
 
@@ -1405,6 +1408,227 @@ def run_matching(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 7B — LIKERT SCORING PIPELINE (S3)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Four Haiku 4.5 judgments per matched volunteer, executed in fixed waves.
+# The LLM boundary is narrow by design: the model sees the request context,
+# one volunteer profile, and one item's statement + anchors, and returns a
+# raw 1–5 selection.  Everything else — box collapse, score mapping, tier
+# thresholds, caps, ordering — is deterministic code (I1/I4).
+
+# Concurrency is FIXED (no tuning knobs): 4 items × 4 volunteers in flight
+# = 16 calls per wave; wave order is matched-list order.
+VOLUNTEERS_IN_FLIGHT = 4
+_SCORER_MAX_WORKERS = VOLUNTEERS_IN_FLIGHT * len(LIKERT_ITEMS)
+
+SCORING_UNAVAILABLE_NOTE = (
+    "Automated scoring was unavailable for this volunteer — shown as "
+    "Technical Match by policy (passes all hard requirements)."
+)
+
+
+def collapse_box(selection: int) -> str:
+    """Raw 1–5 → box label.  Code-side only; the model never sees boxes."""
+    return {5: "T2B", 4: "T2B", 3: "Neutral", 2: "B2B", 1: "B2B"}[selection]
+
+
+def partition_waves(units: list, wave_size: int = VOLUNTEERS_IN_FLIGHT) -> list:
+    """Chunk scoring units into fixed-size waves, preserving order."""
+    return [units[i:i + wave_size] for i in range(0, len(units), wave_size)]
+
+
+def build_scorer_shared_context(state: dict, need_set: dict) -> str:
+    """Shared system context for every item call of one need set's group.
+
+    Contents per PLAN S3: original request, need-set description, STATED
+    soft preferences, unconfirmed suggested skills labeled as context only
+    (the surviving intent of old audit fix 9), and the recurring line when
+    set (fix 12's use point).  No capacity numbers, history, or home area
+    — those are deterministic display concerns.
+    """
+    lines = [
+        "You are scoring one volunteer's fit for a volunteer request at "
+        "Northbridge Community Alliance.",
+        "Rate your agreement with the statement presented, based only on "
+        "the information provided.",
+        "",
+        "=== REQUEST ===",
+        str(state.get("user_prompt", "")),
+        "",
+        "=== NEED SET ===",
+        str(need_set.get("description", "")),
+    ]
+
+    soft = state.get("soft_preferences", "")
+    lines += ["", "=== STATED SOFT PREFERENCES ==="]
+    lines.append(soft if soft else "None stated.")
+
+    unchecked = state.get("unchecked_skills", [])
+    if unchecked:
+        lines += [
+            "",
+            f"Suggested skills ({', '.join(unchecked)}) are suggested but "
+            f"not required — context only.",
+        ]
+
+    if state.get("is_recurring"):
+        end = state.get("recurring_end_date") or "an open-ended date"
+        lines += [
+            "",
+            f"This is a recurring need through {end}; weigh sustained "
+            f"availability.",
+        ]
+
+    return "\n".join(lines)
+
+
+def build_volunteer_profile(vol_row) -> str:
+    """Compressed volunteer profile — the same soft-fit fields the old
+    recommender saw; capacity, history, and home area stay out."""
+    return f"""VOLUNTEER: {vol_row['preferred_name']} ({vol_row['volunteer_id']})
+  Skills: {truncate_text(vol_row['skills'])}
+  Preferred Roles: {truncate_text(vol_row.get('preferred_roles', ''))}
+  Certifications: {truncate_text(vol_row['certifications'])}
+  Availability: {vol_row['availability_days']} / {vol_row['availability_time_blocks']}
+  Availability Notes: {truncate_text(vol_row.get('availability_notes', ''))}
+  Transportation: {vol_row.get('transportation', 'N/A')}
+  Languages: {vol_row['languages']}
+  Notes: {truncate_text(vol_row.get('notes', ''))}"""
+
+
+def build_item_prompt(item: dict) -> str:
+    """One item's statement plus the anchor labels — nothing else."""
+    anchor_lines = "\n".join(
+        f"{value} = {label}" for label, value in LIKERT_ANCHORS
+    )
+    return f"{item['text']}\n\nAnchors:\n{anchor_lines}"
+
+
+def _score_item_with_retry(shared_ctx: str, profile: str, item: dict) -> int:
+    """One item call with exactly one jittered retry.
+
+    The client itself runs max_retries=0, so this is the ONLY retry layer.
+    A second failure propagates — the caller applies the volunteer-level
+    Technical Match fallback (never a fake Neutral, which would skew the
+    sum).
+    """
+    item_prompt = build_item_prompt(item)
+    try:
+        return call_likert_item(shared_ctx, profile, item_prompt)
+    except Exception:
+        time.sleep(random.uniform(0.2, 0.8))
+        return call_likert_item(shared_ctx, profile, item_prompt)
+
+
+def run_scoring_waves(units: list) -> dict:
+    """Execute all item calls for the given units in fixed waves.
+
+    units: [{"volunteer_id", "shared_ctx", "profile"}, ...] in matched-list
+    order.  Returns {volunteer_id: {"raw_selections": [int×4]} |
+    {"failed": True}}.  Futures are keyed (volunteer_id, item_idx) so
+    aggregation is order-independent; an empty unit list spins up nothing
+    (skip-on-empty is structural).
+    """
+    results: dict = {}
+    for wave in partition_waves(units):
+        futures = {}
+        with ThreadPoolExecutor(max_workers=_SCORER_MAX_WORKERS) as pool:
+            for unit in wave:
+                for item_idx, item in enumerate(LIKERT_ITEMS):
+                    futures[(unit["volunteer_id"], item_idx)] = pool.submit(
+                        _score_item_with_retry,
+                        unit["shared_ctx"], unit["profile"], item,
+                    )
+        for unit in wave:
+            vid = unit["volunteer_id"]
+            selections = []
+            failed = False
+            for item_idx in range(len(LIKERT_ITEMS)):
+                try:
+                    selections.append(futures[(vid, item_idx)].result())
+                except Exception:
+                    failed = True
+            results[vid] = (
+                {"failed": True} if failed
+                else {"raw_selections": selections}
+            )
+    return results
+
+
+def score_volunteers_node(state: GraphState) -> dict:
+    """LLM node: four Likert items per matched volunteer, in waves.
+
+    Tier assignment here is PROVISIONAL (uniform Technical Match) until
+    S4's postprocess_recommendations lands the threshold mapping; raw
+    selections, boxes, and totals are already carried so the record never
+    discards the distribution.  Almost-matched volunteers never enter the
+    scorer (structural, not policy).
+    """
+    roster = load_roster()
+
+    units = []
+    seen_vids = set()
+    for match_group in state["matched_volunteers"]:
+        need_set = state["need_sets"][match_group["need_set_index"]]
+        shared_ctx = build_scorer_shared_context(state, need_set)
+        for vid in match_group["matched_volunteer_ids"]:
+            if vid in seen_vids:
+                continue
+            seen_vids.add(vid)
+            vol_rows = roster[roster["volunteer_id"] == vid]
+            if vol_rows.empty:
+                continue
+            units.append({
+                "volunteer_id": vid,
+                "shared_ctx": shared_ctx,
+                "profile": build_volunteer_profile(vol_rows.iloc[0]),
+            })
+
+    scores = run_scoring_waves(units)
+
+    recs = []
+    for unit in units:
+        vid = unit["volunteer_id"]
+        score = scores[vid]
+        if score.get("failed"):
+            recs.append({
+                "volunteer_id": vid,
+                "tier": "Technical Match",
+                "reasoning": SCORING_UNAVAILABLE_NOTE,
+                "raw_selections": None,
+                "boxes": None,
+                "total_score": None,
+            })
+            continue
+        selections = score["raw_selections"]
+        recs.append({
+            "volunteer_id": vid,
+            "tier": "Technical Match",   # provisional until S4 tier mapping
+            "reasoning": "",
+            "raw_selections": selections,
+            "boxes": [collapse_box(s) for s in selections],
+            "total_score": sum(SCORE_MAP[s] for s in selections),
+        })
+
+    for am in state["almost_matched"]:
+        vid = am["volunteer_id"]
+        if vid in seen_vids:
+            continue
+        seen_vids.add(vid)
+        recs.append({
+            "volunteer_id": vid,
+            "tier": "Almost Match",
+            "reasoning": f"Blocked by: {am['blocking_requirement']}",
+        })
+
+    return sanitize_for_state({
+        "recommendations": recs,
+        "configuration_notes": None,
+        "gap_notes": None,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 8 — LANGGRAPH NODE FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1653,48 +1877,6 @@ def match_volunteers_node(state: GraphState) -> dict:
     })
 
 
-def recommend_node(state: GraphState) -> dict:
-    """Interim deterministic recommender — the S1→S3 bridge.
-
-    The old single-call LLM recommender is DELETED (not migrated — PLAN
-    §1b); the Likert scoring node replaces this stub in S3.  Until then:
-    every matched volunteer lands as Technical Match and every
-    almost-matched volunteer as Almost Match with a templated blocker
-    note, keeping the graph runnable and the display shape stable at
-    this commit.  This is the same shape as S3's failure fallback.
-    """
-    recs = []
-    seen_vids = set()
-
-    for match_group in state["matched_volunteers"]:
-        for vid in match_group["matched_volunteer_ids"]:
-            if vid in seen_vids:
-                continue
-            recs.append({
-                "volunteer_id": vid,
-                "tier": "Technical Match",
-                "reasoning": "",
-            })
-            seen_vids.add(vid)
-
-    for am in state["almost_matched"]:
-        vid = am["volunteer_id"]
-        if vid in seen_vids:
-            continue
-        recs.append({
-            "volunteer_id": vid,
-            "tier": "Almost Match",
-            "reasoning": f"Blocked by: {am['blocking_requirement']}",
-        })
-        seen_vids.add(vid)
-
-    return sanitize_for_state({
-        "recommendations": recs,
-        "configuration_notes": None,
-        "gap_notes": None,
-    })
-
-
 def write_request_record_node(state: GraphState) -> dict:
     """Terminal node: persists the full request record to the requests CSV."""
     record = {
@@ -1739,19 +1921,19 @@ def build_graph():
 
     The graph pauses after classify_needs so the user can confirm which
     extracted skills should be treated as hard requirements.  When resumed,
-    it runs match_volunteers → recommend → write_request_record.
+    it runs match_volunteers → score_volunteers → write_request_record.
     """
     builder = StateGraph(GraphState)
 
     builder.add_node("classify_needs", classify_needs_node)
     builder.add_node("match_volunteers", match_volunteers_node)
-    builder.add_node("recommend", recommend_node)
+    builder.add_node("score_volunteers", score_volunteers_node)
     builder.add_node("write_request_record", write_request_record_node)
 
     builder.add_edge(START, "classify_needs")
     builder.add_edge("classify_needs", "match_volunteers")
-    builder.add_edge("match_volunteers", "recommend")
-    builder.add_edge("recommend", "write_request_record")
+    builder.add_edge("match_volunteers", "score_volunteers")
+    builder.add_edge("score_volunteers", "write_request_record")
     builder.add_edge("write_request_record", END)
 
     checkpointer = InMemorySaver()

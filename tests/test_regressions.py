@@ -537,44 +537,194 @@ class TestS1RequestConstruction:
         assert "max_retries=0" in src
 
 
-class TestS1StubRecommender:
-    def test_matched_technical_almost_blocked(self, app):
-        state = make_state(
-            matched_volunteers=[{
-                "need_set_index": 0,
-                "need_set_description": "Helper",
-                "count_needed": 1,
-                "matched_volunteer_ids": ["V-0001", "V-0002"],
-                "margins": {},
-            }],
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S3: Likert scoring node — waves, retry, technical fallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _match_group(idx, vids, description="Helper"):
+    return {
+        "need_set_index": idx,
+        "need_set_description": description,
+        "count_needed": 1,
+        "matched_volunteer_ids": vids,
+        "margins": {},
+    }
+
+
+def _scoring_state(app, monkeypatch, vids, **state_overrides):
+    """State + roster wiring for score_volunteers_node tests."""
+    roster = roster_frame(*[
+        make_volunteer(vid, f"Vol {vid}") for vid in vids
+    ])
+    patch_loaders(monkeypatch, app, roster, assignments_frame())
+    defaults = {
+        "need_sets": [make_need_set()],
+        "matched_volunteers": [_match_group(0, list(vids))],
+    }
+    defaults.update(state_overrides)
+    return make_state(**defaults)
+
+
+class TestS3WavePartitioning:
+    def test_wave_shapes_deterministic(self, app):
+        for n, shape in [(1, [1]), (4, [4]), (5, [4, 1]), (9, [4, 4, 1])]:
+            units = list(range(n))
+            waves = app.partition_waves(units)
+            assert [len(w) for w in waves] == shape
+            assert [u for w in waves for u in w] == units  # order preserved
+
+
+class TestS3ScoringNode:
+    def test_aggregation_raw_boxes_total(self, app, monkeypatch):
+        """Known selections → raw list, box collapse, and summed score."""
+        by_item = {"great fit": 5, "no friction": 4, "glad to take": 3,
+                   "would recommend": 2}
+
+        def fake_item(shared, profile, item_prompt):
+            for marker, val in by_item.items():
+                if marker in item_prompt:
+                    return val
+            raise AssertionError(f"unknown item: {item_prompt[:60]}")
+
+        monkeypatch.setattr(app, "call_likert_item", fake_item)
+        out = app.score_volunteers_node(
+            _scoring_state(app, monkeypatch, ["V-0001"])
+        )
+        rec = out["recommendations"][0]
+        assert rec["raw_selections"] == [5, 4, 3, 2]
+        assert rec["boxes"] == ["T2B", "T2B", "Neutral", "B2B"]
+        assert rec["total_score"] == 3 + 3 + 1 - 1  # == 6
+        assert rec["tier"] == "Technical Match"     # provisional until S4
+
+    def test_persistent_failure_isolated_to_its_volunteer(self, app, monkeypatch):
+        """One volunteer's failing item → Technical fallback with the
+        templated note; the other volunteer scores normally.  Never a
+        fake Neutral."""
+        monkeypatch.setattr(app.time, "sleep", lambda s: None)
+
+        def fake_item(shared, profile, item_prompt):
+            if "V-BAD" in profile and "great fit" in item_prompt:
+                raise RuntimeError("persistent transport failure")
+            return 5
+
+        monkeypatch.setattr(app, "call_likert_item", fake_item)
+        out = app.score_volunteers_node(
+            _scoring_state(app, monkeypatch, ["V-BAD", "V-GOOD"])
+        )
+        recs = {r["volunteer_id"]: r for r in out["recommendations"]}
+        assert recs["V-BAD"]["tier"] == "Technical Match"
+        assert recs["V-BAD"]["reasoning"] == app.SCORING_UNAVAILABLE_NOTE
+        assert recs["V-BAD"]["raw_selections"] is None
+        assert recs["V-GOOD"]["raw_selections"] == [5, 5, 5, 5]
+        assert recs["V-GOOD"]["total_score"] == 12
+
+    def test_single_retry_recovers_transient_failure(self, app, monkeypatch):
+        monkeypatch.setattr(app.time, "sleep", lambda s: None)
+        attempts = {"n": 0}
+
+        def flaky_item(shared, profile, item_prompt):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("transient")
+            return 4
+
+        monkeypatch.setattr(app, "call_likert_item", flaky_item)
+        state = _scoring_state(app, monkeypatch, ["V-0001"])
+        out = app.score_volunteers_node(state)
+        rec = out["recommendations"][0]
+        assert rec["raw_selections"] == [4, 4, 4, 4]
+        assert attempts["n"] == 5  # 4 items + 1 retry
+
+    def test_almost_matched_never_scored(self, app, monkeypatch):
+        scored_profiles = []
+
+        def fake_item(shared, profile, item_prompt):
+            scored_profiles.append(profile)
+            return 4
+
+        monkeypatch.setattr(app, "call_likert_item", fake_item)
+        state = _scoring_state(
+            app, monkeypatch, ["V-0001"],
             almost_matched=[{
-                "volunteer_id": "V-0003",
+                "volunteer_id": "V-BLOCKED",
                 "preferred_name": "Blocked Bob",
                 "blocking_requirement": "Required Certifications",
                 "blocking_column": "certifications",
             }],
         )
-        out = app.recommend_node(state)
+        out = app.score_volunteers_node(state)
+        assert all("V-BLOCKED" not in p for p in scored_profiles)
         recs = {r["volunteer_id"]: r for r in out["recommendations"]}
-        assert recs["V-0001"]["tier"] == "Technical Match"
-        assert recs["V-0002"]["tier"] == "Technical Match"
-        assert recs["V-0003"]["tier"] == "Almost Match"
-        assert "Required Certifications" in recs["V-0003"]["reasoning"]
-        assert out["gap_notes"] is None
+        assert recs["V-BLOCKED"]["tier"] == "Almost Match"
+        assert "Required Certifications" in recs["V-BLOCKED"]["reasoning"]
 
-    def test_duplicate_ids_across_groups_deduped(self, app):
-        state = make_state(
-            matched_volunteers=[
-                {"need_set_index": 0, "need_set_description": "A",
-                 "count_needed": 1, "matched_volunteer_ids": ["V-0001"],
-                 "margins": {}},
-                {"need_set_index": 1, "need_set_description": "B",
-                 "count_needed": 1, "matched_volunteer_ids": ["V-0001"],
-                 "margins": {}},
-            ],
-        )
-        out = app.recommend_node(state)
+    def test_empty_matched_pool_makes_zero_calls(self, app, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_item(shared, profile, item_prompt):
+            calls["n"] += 1
+            return 3
+
+        monkeypatch.setattr(app, "call_likert_item", fake_item)
+        state = _scoring_state(app, monkeypatch, [])
+        state["matched_volunteers"] = [_match_group(0, [])]
+        out = app.score_volunteers_node(state)
+        assert calls["n"] == 0
+        assert out["recommendations"] == []
+
+    def test_duplicate_ids_across_groups_scored_once(self, app, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_item(shared, profile, item_prompt):
+            calls["n"] += 1
+            return 4
+
+        monkeypatch.setattr(app, "call_likert_item", fake_item)
+        state = _scoring_state(app, monkeypatch, ["V-0001"])
+        state["need_sets"] = [make_need_set(), make_need_set()]
+        state["matched_volunteers"] = [
+            _match_group(0, ["V-0001"]), _match_group(1, ["V-0001"]),
+        ]
+        out = app.score_volunteers_node(state)
         assert len(out["recommendations"]) == 1
+        assert calls["n"] == 4  # one wave of four items, once
+
+
+class TestS3PromptFactory:
+    def test_recurring_line_present_when_set(self, app):
+        state = make_state(is_recurring=True, recurring_end_date="2026-10-01")
+        ctx = app.build_scorer_shared_context(state, make_need_set())
+        assert "recurring need through 2026-10-01" in ctx
+        assert "sustained availability" in ctx
+
+    def test_recurring_line_absent_when_unset(self, app):
+        ctx = app.build_scorer_shared_context(make_state(), make_need_set())
+        assert "recurring" not in ctx
+
+    def test_suggested_skills_labeled_context_only(self, app):
+        state = make_state(unchecked_skills=["Photography/Media"])
+        ctx = app.build_scorer_shared_context(state, make_need_set())
+        assert "Photography/Media" in ctx
+        assert "suggested but not required" in ctx
+
+    def test_scorer_never_sees_the_word_tier(self, app):
+        """I4: thresholds/caps live in code; the model must not be told."""
+        state = make_state(
+            soft_preferences="prefers weekends",
+            unchecked_skills=["Driver"],
+            is_recurring=True,
+            recurring_end_date="2026-12-31",
+        )
+        ctx = app.build_scorer_shared_context(state, make_need_set())
+        profile = app.build_volunteer_profile(
+            roster_frame(make_volunteer("V-0001", "Ada")).iloc[0]
+        )
+        for item in app.LIKERT_ITEMS:
+            prompt = app.build_item_prompt(item)
+            assert "tier" not in (ctx + profile + prompt).lower()
+        anchors = app.build_item_prompt(app.LIKERT_ITEMS[0])
+        assert "5 = Strongly agree" in anchors
+        assert "1 = Strongly disagree" in anchors
 
 
 class TestS1MigrationComplete:
