@@ -1,0 +1,33 @@
+Based on your understanding of this volunteer, the requested task, and the nature of volunteering in general, rate your agreement with the following statement: 
+This person is a great fit for this role. 
+Selection:		Structured Output:	Score for tiering: 
+Strongly agree		5			3
+Somewhat agree		4			3
+Neutral			3			1
+Somewhat disagree	2			-1
+Strongly disagree	1			-1
+
+Based on the data you have on this volunteer's schedule and the nature of the request, rate your agreement with the following statement:
+The timeline/schedule in the request, if specified, would cause no friction given this person's availability, schedule, or notification preferences.
+Selection:		Structured Output:	Score for tiering: 
+Strongly agree		5			3
+Somewhat agree		4			3
+Neutral			3			1
+Somewhat disagree	2			-1
+Strongly disagree	1			-1
+
+Based on this volunteer's preferences, history, and characteristics, they will likely be glad to take this request. 
+Selection:		Structured Output:	Score for tiering: 
+Strongly agree		5			3
+Somewhat agree		4			3
+Neutral			3			1
+Somewhat disagree	2			-1
+Strongly disagree	1			-1
+
+Based on what you know about this volunteer, the request, and volunteering in general, you would recommend this volunteer for this role.
+Selection:		Structured Output:	Score for tiering: 
+Strongly agree		5			3
+Somewhat agree		4			3
+Neutral			3			1
+Somewhat disagree	2			-1
+Strongly disagree	1			-1

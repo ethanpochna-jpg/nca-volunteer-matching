@@ -271,6 +271,63 @@ FOOD_HANDLING_SKILLS = {
 }
 DRIVING_SKILLS = {"Driver"}
 
+# ── Likert scoring constants (S2) ─────────────────────────────────────────
+# Source of truth: plaintext_ranking_prompts.txt (verbatim — item wording
+# changes are a spec change, not a refactor).  The model sees an item's
+# text and the anchor labels ONLY; the tiering score collapse (T2B/Neutral/
+# B2B → +3/+1/−1) happens in code and is never shown at scoring time.
+
+LIKERT_ANCHORS = (
+    ("Strongly agree", 5),
+    ("Somewhat agree", 4),
+    ("Neutral", 3),
+    ("Somewhat disagree", 2),
+    ("Strongly disagree", 1),
+)
+
+LIKERT_ITEMS = (
+    {
+        "key": "overall_fit",
+        "text": (
+            "Based on your understanding of this volunteer, the requested "
+            "task, and the nature of volunteering in general, rate your "
+            "agreement with the following statement:\n"
+            "This person is a great fit for this role."
+        ),
+    },
+    {
+        "key": "schedule_friction",
+        "text": (
+            "Based on the data you have on this volunteer's schedule and "
+            "the nature of the request, rate your agreement with the "
+            "following statement:\n"
+            "The timeline/schedule in the request, if specified, would "
+            "cause no friction given this person's availability, schedule, "
+            "or notification preferences."
+        ),
+    },
+    {
+        "key": "willingness",
+        "text": (
+            "Based on this volunteer's preferences, history, and "
+            "characteristics, they will likely be glad to take this request."
+        ),
+    },
+    {
+        "key": "recommendation",
+        "text": (
+            "Based on what you know about this volunteer, the request, and "
+            "volunteering in general, you would recommend this volunteer "
+            "for this role."
+        ),
+    },
+)
+
+# Raw 1–5 selection → tiering score.  Top-two-box +3, Neutral +1,
+# bottom-two-box −1; attainable four-item sums are the even values in
+# [−4, 12].
+SCORE_MAP = {5: 3, 4: 3, 3: 1, 2: -1, 1: -1}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — DATA LOADING

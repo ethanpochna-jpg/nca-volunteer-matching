@@ -586,3 +586,56 @@ class TestS1MigrationComplete:
         for pattern in ("RECOMMENDER_SYSTEM_PROMPT", "RecommenderOutput",
                         "VolunteerRecommendation", "ChatOpenAI", "langchain"):
             assert pattern not in src, f"stale reference: {pattern}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S2: LIKERT_ITEMS + SCORE_MAP source-of-truth constants
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS2LikertConstants:
+    def _source_blocks(self):
+        """Parse the committed verbatim source into per-item prompt texts.
+
+        Blocks split on blank lines; anchor-table rows (the Selection /
+        Structured Output / Score columns) are stripped; remaining lines
+        are whitespace-normalized and joined.
+        """
+        from pathlib import Path
+        raw = Path(__file__).parent.joinpath(
+            "data", "plaintext_ranking_prompts.txt"
+        ).read_text(encoding="utf-8")
+        table_markers = ("Selection:", "Strongly agree", "Somewhat agree",
+                         "Neutral", "Somewhat disagree", "Strongly disagree")
+        blocks = []
+        for block in raw.split("\n\n"):
+            lines = [
+                ln.strip() for ln in block.splitlines()
+                if ln.strip() and not ln.strip().startswith(table_markers)
+            ]
+            if lines:
+                blocks.append("\n".join(lines))
+        return blocks
+
+    def test_item_texts_match_source_file_verbatim(self, app):
+        source_texts = self._source_blocks()
+        app_texts = [item["text"] for item in app.LIKERT_ITEMS]
+        assert app_texts == source_texts
+
+    def test_four_items_in_spec_order(self, app):
+        assert [i["key"] for i in app.LIKERT_ITEMS] == [
+            "overall_fit", "schedule_friction", "willingness", "recommendation",
+        ]
+
+    def test_score_map_totality_and_values(self, app):
+        """Total over 1–5; T2B +3, Neutral +1, B2B −1 per the source table."""
+        assert set(app.SCORE_MAP.keys()) == {1, 2, 3, 4, 5}
+        assert app.SCORE_MAP == {5: 3, 4: 3, 3: 1, 2: -1, 1: -1}
+
+    def test_anchor_labels_match_source(self, app):
+        assert app.LIKERT_ANCHORS == (
+            ("Strongly agree", 5),
+            ("Somewhat agree", 4),
+            ("Neutral", 3),
+            ("Somewhat disagree", 2),
+            ("Strongly disagree", 1),
+        )
