@@ -93,3 +93,79 @@ class TestFix2OrBranchSubsumption:
             {"AND": ["Mon"], "OR": [["Mon", "Sat"], ["Sun"]]}, domain="days"
         )
         assert result == {"AND": ["Mon"], "OR": [["Sat"], ["Sun"]]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 10: fuzzy canonicalization for the skills domain
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fake_classifier(app, monkeypatch, canned_output):
+    """Stub ChatOpenAI so classify_needs_node runs offline.
+
+    Exercises the REAL post-LLM sanitization code; only the network call
+    is replaced.  Dies with the langchain call sites in S1.
+    """
+    class _Fake:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, messages):
+            return canned_output
+
+    monkeypatch.setattr(app, "ChatOpenAI", _Fake)
+
+
+class TestFix10SkillsCanonicalization:
+    def test_lowercase_skill_survives_into_extracted_skills(self, app, monkeypatch):
+        """'tutoring - math' from the classifier must reach the review UI."""
+        canned = app.ClassifierOutput(
+            need_sets=[app.NeedSet(
+                count=1,
+                description="Math tutor",
+                applicable_skills=["tutoring - math", "Tutoring - Math"],
+            )],
+            reasoning="canned",
+        )
+        _fake_classifier(app, monkeypatch, canned)
+        out = app.classify_needs_node(make_state(user_prompt="math tutor"))
+        assert out["extracted_skills"] == ["Tutoring - Math"]
+        assert out["need_sets"][0]["applicable_skills"] == ["Tutoring - Math"]
+
+    def test_roster_side_case_mismatch_matches(self, app):
+        """Roster 'PANTRY OPERATIONS' satisfies required 'Pantry Operations'.
+
+        (Pantry Operations triggers the food-handling cert rule, so the
+        fixture volunteer must hold Food Safety to isolate the skills check.)
+        """
+        roster = roster_frame(
+            make_volunteer(
+                "V-0001", "Shouty",
+                skills="PANTRY OPERATIONS",
+                certifications="Food Safety - Basic",
+            ),
+            make_volunteer("V-0002", "NoSkills",
+                           certifications="Food Safety - Basic"),
+        )
+        result = run_matching_defaults(
+            app, make_need_set(), roster,
+            confirmed_skills=["Pantry Operations"],
+        )
+        assert result["matched"] == ["V-0001"]
+
+    def test_margins_report_canonical_extra_skills(self, app):
+        """Extra-skill margins compare canonical forms, not raw strings."""
+        roster = roster_frame(
+            make_volunteer(
+                "V-0001", "Multi",
+                skills="PANTRY OPERATIONS; driver",
+                certifications="Food Safety - Basic",
+            ),
+        )
+        result = run_matching_defaults(
+            app, make_need_set(), roster,
+            confirmed_skills=["Pantry Operations"],
+        )
+        assert result["margins"]["V-0001"]["extra_skills"] == ["Driver"]

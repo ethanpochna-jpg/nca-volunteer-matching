@@ -407,6 +407,7 @@ def canonicalize_value(value, domain: Optional[str] = None) -> str:
         "languages": VALID_LANGUAGES,
         "days": VALID_DAYS,
         "time_blocks": VALID_TIME_BLOCKS,
+        "skills": VALID_SKILLS,
     }.get(domain, [])
     for valid in valid_values:
         if raw_lower == valid.casefold():
@@ -1093,7 +1094,7 @@ def run_matching(
     def check_skills(vol_row):
         if not required_skills:
             return True
-        vol_skills = parse_semicolon(vol_row["skills"])
+        vol_skills = parse_semicolon(vol_row["skills"], domain="skills")
         return required_skills.issubset(vol_skills)
 
     def check_certs(vol_row):
@@ -1233,7 +1234,7 @@ def run_matching(
     margins = {}
     for vid in matched:
         vol = roster_df[roster_df["volunteer_id"] == vid].iloc[0]
-        vol_skills = parse_semicolon(vol["skills"])
+        vol_skills = parse_semicolon(vol["skills"], domain="skills")
         vol_certs = parse_semicolon(vol["certifications"])
         vol_langs = parse_semicolon(vol["languages"])
         vol_days = parse_semicolon(vol["availability_days"])
@@ -1323,13 +1324,17 @@ def classify_needs_node(state: GraphState) -> dict:
     ])
 
     # ── Collect and validate extracted skills ────────────────────────────
+    # Fix 10: canonicalize before membership testing — a classifier emitting
+    # "tutoring - math" must not be silently dropped from the confirmation
+    # UI (never confirmable → never enforced → never cert-triggering).
     all_skills = []
     seen = set()
     for ns in result.need_sets:
         for sk in ns.applicable_skills:
-            if sk not in seen and sk in VALID_SKILLS:
-                all_skills.append(sk)
-                seen.add(sk)
+            csk = canonicalize_value(sk, "skills")
+            if csk and csk not in seen and csk in VALID_SKILLS:
+                all_skills.append(csk)
+                seen.add(csk)
 
     # ── Sanitize ALL vocabulary fields in each need set (from app_4) ─────
     # The LLM can produce near-miss strings like "spanish" instead of
@@ -1386,10 +1391,13 @@ def classify_needs_node(state: GraphState) -> dict:
         if ns_dict.get("location_area") and ns_dict["location_area"] not in valid_areas_set:
             ns_dict["location_area"] = None
 
-        # Validate applicable_skills
-        ns_dict["applicable_skills"] = [
-            s for s in ns_dict.get("applicable_skills", []) if s in VALID_SKILLS
-        ]
+        # Validate applicable_skills (fix 10: canonicalize like other domains)
+        canonical_skills = []
+        for s in ns_dict.get("applicable_skills", []):
+            cs = canonicalize_value(s, "skills")
+            if cs in VALID_SKILLS and cs not in canonical_skills:
+                canonical_skills.append(cs)
+        ns_dict["applicable_skills"] = canonical_skills
 
         sanitized_need_sets.append(ns_dict)
 
