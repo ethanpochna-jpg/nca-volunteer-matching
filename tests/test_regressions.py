@@ -1,14 +1,27 @@
-"""Regression suite — grows one test group per PLAN item.
+"""Regression suite — one test group per PLAN item, in landing order.
 
-Layout (kept in PLAN order as fixes land):
+Layout:
   Phase 0  — harness smoke
-  Phase 1  — fixes 2, 10, 12, 1, 3, 5, 6, 4
-  Phase 2  — S1–S7
-  Phase 3  — permanent guards
+  Phase 1  — fixes 2, 10, 12, 1, 3, 5, 6, 4 (dependency order)
+  Phase 2  — S1 transport/migration, S2 constants, S3 scoring node,
+             S4 tiering/caps, S5 assembly/gap notes, S6 reasoning/dissent,
+             S7 SQLite persistence + seed
+  Phase 3  — permanent guards (committed-hours ISO math, degenerate
+             branches, per-need-set scoping, sanitize_for_state)
+
+No test calls a live API: LLM configuration is asserted via
+mocked-transport request bodies (conftest.make_mock_anthropic), and node
+logic via monkeypatched call helpers.
 """
 
+import json
+import sqlite3 as _sqlite3
+import uuid as _uuid
+
+import pandas as pd
+
 from tests.conftest import patch_llm, patch_loaders
-from tests.fixtures import (  # noqa: F401  (builders used as fixes land)
+from tests.fixtures import (
     assignments_frame,
     make_need_set,
     make_state,
@@ -438,9 +451,6 @@ class TestFix4DateGuard:
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 2 — S1: native Anthropic client, call helpers, stub recommender
 # ═══════════════════════════════════════════════════════════════════════════
-
-import json
-
 
 def _canned_classifier_json(app) -> str:
     return app.ClassifierOutput(
@@ -1096,12 +1106,6 @@ class TestS6BundleAndPrompts:
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 2 — S7: SQLite request record, schema_version 2, seed script
 # ═══════════════════════════════════════════════════════════════════════════
-
-import sqlite3 as _sqlite3
-import uuid as _uuid
-
-import pandas as pd
-
 
 def _record_state(app, monkeypatch, tmp_path):
     """Point the DB path at a temp file and build a fully-scored state."""
