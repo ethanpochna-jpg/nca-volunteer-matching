@@ -881,6 +881,108 @@ class TestS4NodeIntegration:
         assert rec["caps_applied"] == []
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S5: result assembly, gap notes, configuration_notes deletion
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS5GapNotes:
+    def test_covered_need_sets_produce_no_notes(self, app):
+        mg = _match_group(0, ["V-0001"])
+        assert app.build_gap_notes([mg], {}) == ""
+
+    def test_underfilled_need_set_reports_need_found_and_blockers(self, app):
+        mg = _match_group(0, [], description="Delivery driver")
+        counterfactuals = {
+            "NS0: Transportation": [{"volunteer_id": "V-1"},
+                                    {"volunteer_id": "V-2"}],
+            "NS0: Notice Period": [{"volunteer_id": "V-3"}],
+            "NS1: Transportation": [{"volunteer_id": "V-9"}],  # other NS
+        }
+        notes = app.build_gap_notes([mg], counterfactuals)
+        assert "Need set 'Delivery driver': need 1, found 0." in notes
+        assert "Transportation blocks 2" in notes
+        assert "Notice Period blocks 1" in notes
+        assert "V-9" not in notes  # other need set's blockers stay out
+
+    def test_blockers_ordered_by_count_then_name(self, app):
+        mg = _match_group(0, [], description="X")
+        counterfactuals = {
+            "NS0: Beta": [{}, {}],
+            "NS0: Alpha": [{}, {}],
+            "NS0: Gamma": [{}, {}, {}],
+        }
+        notes = app.build_gap_notes([mg], counterfactuals)
+        assert notes.index("Gamma blocks 3") < notes.index("Alpha blocks 2")
+        assert notes.index("Alpha blocks 2") < notes.index("Beta blocks 2")
+
+    def test_node_level_gap_on_fix3_style_fixture(self, app, monkeypatch):
+        """The fix-3 scenario minus the car: driver slot unfillable →
+        gap notes name the need set and the transportation blocker."""
+        roster = roster_frame(
+            make_volunteer("V-ANA", "Ana", languages="Spanish;English",
+                           transportation="Public Transit"),
+            make_volunteer("V-BEA", "Bea", languages="Spanish;English",
+                           transportation="Public Transit"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(need_sets=[
+            make_need_set(description="Spanish-speaking intake volunteer",
+                          languages={"AND": ["Spanish"], "OR": []}),
+            make_need_set(description="Delivery driver",
+                          transportation_needed="Car"),
+        ])
+        match_out = app.match_volunteers_node(state)
+        state.update(match_out)
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 4)
+        out = app.score_volunteers_node(state)
+        assert "Need set 'Delivery driver': need 1, found 0." in out["gap_notes"]
+        assert "Transportation blocks" in out["gap_notes"]
+
+    def test_gap_notes_none_when_everything_covered(self, app, monkeypatch):
+        state = _scoring_state(app, monkeypatch, ["V-0001"])
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 4)
+        out = app.score_volunteers_node(state)
+        assert out["gap_notes"] is None
+
+
+class TestS5AssemblyAndCleanup:
+    def test_scored_entry_round_trips_through_sanitize(self, app):
+        """Msgpack-safety across the interrupt for the new result fields."""
+        entry = {
+            "volunteer_id": "V-0001",
+            "tier": "Good Match",
+            "reasoning": "",
+            "raw_selections": [5, 4, 3, 2],
+            "boxes": ["T2B", "T2B", "Neutral", "B2B"],
+            "total_score": 6,
+            "caps_applied": ["schedule_preference"],
+        }
+        assert app.sanitize_for_state(entry) == entry
+
+    def test_configuration_notes_fully_deleted(self, app):
+        """D10: no prompt, no state field, no column, no banner."""
+        from pathlib import Path
+        src = Path(app.__file__).read_text(encoding="utf-8")
+        assert "configuration_notes" not in src
+
+    def test_almost_entry_templated_blocker_reasoning(self, app, monkeypatch):
+        state = _scoring_state(
+            app, monkeypatch, ["V-0001"],
+            almost_matched=[{
+                "volunteer_id": "V-BLOCKED",
+                "preferred_name": "Blocked Bob",
+                "blocking_requirement": "Notice Period",
+                "blocking_column": "min_notice_days",
+            }],
+        )
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 4)
+        out = app.score_volunteers_node(state)
+        recs = {r["volunteer_id"]: r for r in out["recommendations"]}
+        assert recs["V-BLOCKED"]["reasoning"] == (
+            "Blocked by exactly one hard requirement: Notice Period."
+        )
+
+
 class TestS1MigrationComplete:
     def test_no_langchain_or_old_recommender_remnants(self, app):
         """PLAN Phase 2 exit grep, enforced early: the old single-call

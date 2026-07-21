@@ -675,10 +675,9 @@ class GraphState(TypedDict):
     almost_matched: list                   # Volunteers blocked by exactly 1 req
     volunteer_histories: dict              # Assignment history per volunteer
 
-    # ── Recommender outputs ──
-    recommendations: list                  # Tiered recommendations (validated)
-    configuration_notes: Optional[str]     # Multi-volunteer grouping notes
-    gap_notes: Optional[str]               # Gap report if insufficient matches
+    # ── Scoring outputs ──
+    recommendations: list                  # Tiered, scored, capped, sorted
+    gap_notes: Optional[str]               # Deterministic gap report (S5)
 
     # ── Request record ──
     request_record: dict                   # The full record written to CSV
@@ -1633,6 +1632,37 @@ def postprocess_recommendations(recs: list, caps_by_vid: dict,
     return recs
 
 
+def build_gap_notes(matched_volunteers: list, counterfactuals: dict) -> str:
+    """Deterministic gap report (S5) — no LLM prose.
+
+    One line per under-filled need set ("need N, found M") plus that need
+    set's top counterfactual blockers with counts.  Empty string when
+    every need set is covered.
+    """
+    lines = []
+    for match_group in matched_volunteers:
+        need = match_group.get("count_needed", 1)
+        found = len(match_group.get("matched_volunteer_ids", []))
+        if found >= need:
+            continue
+        desc = match_group.get("need_set_description", "")
+        line = f"Need set '{desc}': need {need}, found {found}."
+        prefix = f"NS{match_group.get('need_set_index')}: "
+        blockers = sorted(
+            (
+                (key[len(prefix):], len(blocked))
+                for key, blocked in counterfactuals.items()
+                if key.startswith(prefix)
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        if blockers:
+            top = "; ".join(f"{name} blocks {n}" for name, n in blockers[:3])
+            line += f" Top blockers: {top}."
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def score_volunteers_node(state: GraphState) -> dict:
     """LLM node: four Likert items per matched volunteer, in waves.
 
@@ -1702,15 +1732,19 @@ def score_volunteers_node(state: GraphState) -> dict:
         recs.append({
             "volunteer_id": vid,
             "tier": "Almost Match",
-            "reasoning": f"Blocked by: {am['blocking_requirement']}",
+            "reasoning": (
+                f"Blocked by exactly one hard requirement: "
+                f"{am['blocking_requirement']}."
+            ),
         })
 
     recs = postprocess_recommendations(recs, caps_by_vid, names_by_vid)
 
     return sanitize_for_state({
         "recommendations": recs,
-        "configuration_notes": None,
-        "gap_notes": None,
+        "gap_notes": build_gap_notes(
+            state["matched_volunteers"], state.get("counterfactuals", {})
+        ) or None,
     })
 
 
@@ -2362,10 +2396,7 @@ def render_results_stage():
 
     st.subheader("📊 Volunteer Recommendations")
 
-    # ── Configuration / gap notes ──────────────────────────────────────
-    if state.get("configuration_notes"):
-        st.info(f"**Configuration notes:** {state['configuration_notes']}")
-
+    # ── Gap notes (deterministic, S5) ──────────────────────────────────
     if state.get("gap_notes"):
         st.warning(f"**Gap report:** {state['gap_notes']}")
 
