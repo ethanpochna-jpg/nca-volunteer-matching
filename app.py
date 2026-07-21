@@ -147,9 +147,10 @@ def sanitize_for_state(value):
 # end-to-end: if a value isn't in these lists, it can't appear in the roster
 # and would silently fail matching.
 
-# File paths — adjust to wherever you place the data files.
-ROSTER_PATH = "northbridge_volunteer_roster.csv"
-ASSIGNMENTS_PATH = "northbridge_volunteer_assignments.xlsx"
+# File paths — data files live under data/ at the repo root; the app and
+# the test suite both run from the repo root, so relative paths suffice.
+ROSTER_PATH = "data/northbridge_volunteer_roster.csv"
+ASSIGNMENTS_PATH = "data/northbridge_volunteer_assignments.xlsx"
 REQUESTS_DATA_PATH = "northbridge_requests_data.csv"
 
 # ── Roster vocabulary ─────────────────────────────────────────────────────
