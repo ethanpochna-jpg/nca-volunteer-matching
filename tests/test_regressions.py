@@ -594,7 +594,7 @@ class TestS3ScoringNode:
         assert rec["raw_selections"] == [5, 4, 3, 2]
         assert rec["boxes"] == ["T2B", "T2B", "Neutral", "B2B"]
         assert rec["total_score"] == 3 + 3 + 1 - 1  # == 6
-        assert rec["tier"] == "Technical Match"     # provisional until S4
+        assert rec["tier"] == "Good Match"          # 2 ≤ 6 ≤ 8 (S4 mapping)
 
     def test_persistent_failure_isolated_to_its_volunteer(self, app, monkeypatch):
         """One volunteer's failing item → Technical fallback with the
@@ -725,6 +725,160 @@ class TestS3PromptFactory:
         anchors = app.build_item_prompt(app.LIKERT_ITEMS[0])
         assert "5 = Strongly agree" in anchors
         assert "1 = Strongly disagree" in anchors
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S4: postprocess_recommendations — thresholds, caps, sort
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS4TierMapping:
+    def test_all_nine_attainable_sums(self, app):
+        """Full table: each item contributes {+3, +1, −1}; four items give
+        the even sums in [−4, 12]."""
+        expected = {
+            -4: "Technical Match",
+            -2: "Technical Match",
+            0: "Technical Match",
+            2: "Good Match",
+            4: "Good Match",
+            6: "Good Match",
+            8: "Good Match",
+            10: "Perfect Match",
+            12: "Perfect Match",
+        }
+        for total, tier in expected.items():
+            assert app.map_score_to_tier(total) == tier, total
+        assert app.map_score_to_tier(None) == "Technical Match"
+
+    def test_thresholds_are_module_constants(self, app):
+        assert app.PERFECT_MIN == 10
+        assert app.GOOD_MIN == 2
+
+
+class TestS4Caps:
+    def _rec(self, vid, total, name=None):
+        selections = {12: [5, 5, 5, 5], 6: [5, 4, 3, 2], 0: [3, 3, 1, 1]}[total]
+        return {
+            "volunteer_id": vid,
+            "tier": "Technical Match",
+            "reasoning": "",
+            "raw_selections": selections,
+            "boxes": [{5: "T2B", 4: "T2B", 3: "Neutral", 2: "B2B",
+                       1: "B2B"}[s] for s in selections],
+            "total_score": total,
+        }
+
+    def test_cap_a_alone_demotes_perfect_to_good(self, app):
+        recs = app.postprocess_recommendations(
+            [self._rec("V-1", 12)],
+            {"V-1": ["stated_soft_preference"]},
+            {"V-1": "Ada"},
+        )
+        assert recs[0]["tier"] == "Good Match"
+        assert recs[0]["caps_applied"] == ["stated_soft_preference"]
+
+    def test_cap_b_alone_demotes_perfect_to_good(self, app):
+        recs = app.postprocess_recommendations(
+            [self._rec("V-1", 12)],
+            {"V-1": ["schedule_preference"]},
+            {"V-1": "Ada"},
+        )
+        assert recs[0]["tier"] == "Good Match"
+        assert recs[0]["caps_applied"] == ["schedule_preference"]
+
+    def test_both_caps_together_recorded(self, app):
+        recs = app.postprocess_recommendations(
+            [self._rec("V-1", 12)],
+            {"V-1": ["stated_soft_preference", "schedule_preference"]},
+            {"V-1": "Ada"},
+        )
+        assert recs[0]["tier"] == "Good Match"
+        assert recs[0]["caps_applied"] == [
+            "stated_soft_preference", "schedule_preference"
+        ]
+
+    def test_caps_cannot_promote(self, app):
+        """A Technical volunteer with a violation stays Technical and
+        records no applied cap."""
+        recs = app.postprocess_recommendations(
+            [self._rec("V-1", 0)],
+            {"V-1": ["schedule_preference"]},
+            {"V-1": "Ada"},
+        )
+        assert recs[0]["tier"] == "Technical Match"
+        assert recs[0]["caps_applied"] == []
+
+    def test_good_tier_with_cap_unchanged(self, app):
+        recs = app.postprocess_recommendations(
+            [self._rec("V-1", 6)],
+            {"V-1": ["stated_soft_preference"]},
+            {"V-1": "Ada"},
+        )
+        assert recs[0]["tier"] == "Good Match"
+        assert recs[0]["caps_applied"] == []
+
+    def test_sort_by_tier_rank_then_name(self, app):
+        recs = app.postprocess_recommendations(
+            [
+                self._rec("V-TECH", 0),
+                self._rec("V-ZED", 12),
+                self._rec("V-ANN", 12),
+                {"volunteer_id": "V-ALM", "tier": "Almost Match",
+                 "reasoning": "Blocked by: X"},
+            ],
+            {},
+            {"V-TECH": "Mid", "V-ZED": "Zed", "V-ANN": "Ann", "V-ALM": "Alm"},
+        )
+        assert [r["volunteer_id"] for r in recs] == [
+            "V-ANN", "V-ZED", "V-TECH", "V-ALM"
+        ]
+
+    def test_almost_match_never_touched(self, app):
+        entry = {"volunteer_id": "V-ALM", "tier": "Almost Match",
+                 "reasoning": "Blocked by: Notice Period"}
+        recs = app.postprocess_recommendations(
+            [dict(entry)], {"V-ALM": ["schedule_preference"]}, {"V-ALM": "A"},
+        )
+        assert recs[0]["tier"] == "Almost Match"
+        assert recs[0]["reasoning"] == "Blocked by: Notice Period"
+
+
+class TestS4NodeIntegration:
+    def test_stated_preference_violation_caps_at_good(self, app, monkeypatch):
+        """Perfect-scoring volunteer who misses a stated 'prefer monday'
+        lands at Good Match with the cap recorded."""
+        roster = roster_frame(
+            make_volunteer("V-TUE", "TueOnly", availability_days="Tue"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 5)
+        state = make_state(
+            soft_preferences="They prefer monday sessions",
+            need_sets=[make_need_set()],
+            matched_volunteers=[_match_group(0, ["V-TUE"])],
+        )
+        out = app.score_volunteers_node(state)
+        rec = out["recommendations"][0]
+        assert rec["total_score"] == 12
+        assert rec["tier"] == "Good Match"
+        assert rec["caps_applied"] == ["stated_soft_preference"]
+
+    def test_missing_suggested_skills_can_still_reach_perfect(self, app, monkeypatch):
+        """G5: unconfirmed suggestions are context only — never a cap."""
+        roster = roster_frame(
+            make_volunteer("V-0001", "Ada"),   # lacks the suggested skill
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 5)
+        state = make_state(
+            unchecked_skills=["Photography/Media"],
+            need_sets=[make_need_set()],
+            matched_volunteers=[_match_group(0, ["V-0001"])],
+        )
+        out = app.score_volunteers_node(state)
+        rec = out["recommendations"][0]
+        assert rec["tier"] == "Perfect Match"
+        assert rec["caps_applied"] == []
 
 
 class TestS1MigrationComplete:

@@ -331,6 +331,20 @@ LIKERT_ITEMS = (
 # [−4, 12].
 SCORE_MAP = {5: 3, 4: 3, 3: 1, 2: -1, 1: -1}
 
+# ── Tier thresholds and ordering (S4) ─────────────────────────────────────
+# Thresholds live in CODE, never in prompts (I4).  Sum ≥ 10 ⟺ zero B2B and
+# at most one Neutral; 2–8 → Good; ≤ 0 → Technical.  Almost Match is
+# assigned upstream by the matcher, never by score.
+PERFECT_MIN = 10
+GOOD_MIN = 2
+
+TIER_RANK = {
+    "Perfect Match": 0,
+    "Good Match": 1,
+    "Technical Match": 2,
+    "Almost Match": 3,
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — DATA LOADING
@@ -1555,18 +1569,84 @@ def run_scoring_waves(units: list) -> dict:
     return results
 
 
+def map_score_to_tier(total_score: Optional[int]) -> str:
+    """Deterministic threshold mapping (S4).
+
+    Attainable four-item sums are the nine even values in [−4, 12]:
+    ≥ PERFECT_MIN → Perfect; ≥ GOOD_MIN → Good; ≤ 0 → Technical.  A None
+    score (failure fallback) is Technical by policy.
+    """
+    if total_score is None:
+        return "Technical Match"
+    if total_score >= PERFECT_MIN:
+        return "Perfect Match"
+    if total_score >= GOOD_MIN:
+        return "Good Match"
+    return "Technical Match"
+
+
+def compute_cap_reasons(state: dict, need_set: dict, vol_row) -> list:
+    """Deterministic tier-cap inputs (S4).  Exactly two, per D8:
+    (a) violation of the classifier's STATED soft preferences,
+    (b) fix-6 schedule violation from the need-set description.
+    Both run through the word-boundary detector; unconfirmed suggested
+    skills are context only and never cap (a volunteer missing only
+    suggestions can still reach Perfect — G5)."""
+    reasons = []
+    stated = str(state.get("soft_preferences", "") or "")
+    if stated and summarize_soft_preference_violations(
+            {"description": stated}, vol_row):
+        reasons.append("stated_soft_preference")
+    if summarize_soft_preference_violations(need_set, vol_row):
+        reasons.append("schedule_preference")
+    return reasons
+
+
+def postprocess_recommendations(recs: list, caps_by_vid: dict,
+                                names_by_vid: dict) -> list:
+    """Assembly + caps + sort — the deterministic tail of the pipeline.
+
+    - Threshold mapping for scored volunteers.  Almost Match is assigned
+      upstream and never touched here; the failure fallback keeps its
+      deterministic Technical Match.
+    - Caps AFTER thresholds: a soft-preference violation caps the tier at
+      Good Match.  Caps can only demote — a Technical volunteer with a
+      violation stays Technical and records no applied cap.
+    - Sort: tier rank, then preferred name (stable).
+    """
+    for rec in recs:
+        if rec["tier"] == "Almost Match":
+            continue
+        rec["caps_applied"] = []
+        if rec.get("raw_selections") is None:
+            continue                       # failure fallback stays Technical
+        rec["tier"] = map_score_to_tier(rec.get("total_score"))
+        cap_reasons = caps_by_vid.get(rec["volunteer_id"], [])
+        if cap_reasons and TIER_RANK[rec["tier"]] < TIER_RANK["Good Match"]:
+            rec["tier"] = "Good Match"
+            rec["caps_applied"] = list(cap_reasons)
+
+    recs.sort(key=lambda r: (
+        TIER_RANK.get(r["tier"], len(TIER_RANK)),
+        str(names_by_vid.get(r["volunteer_id"], r["volunteer_id"])),
+    ))
+    return recs
+
+
 def score_volunteers_node(state: GraphState) -> dict:
     """LLM node: four Likert items per matched volunteer, in waves.
 
-    Tier assignment here is PROVISIONAL (uniform Technical Match) until
-    S4's postprocess_recommendations lands the threshold mapping; raw
-    selections, boxes, and totals are already carried so the record never
-    discards the distribution.  Almost-matched volunteers never enter the
-    scorer (structural, not policy).
+    Tier assignment is deterministic: threshold mapping over the summed
+    item scores, then caps, then ordering — all in
+    postprocess_recommendations.  Raw selections, boxes, and totals ride
+    along so the record never discards the distribution.  Almost-matched
+    volunteers never enter the scorer (structural, not policy).
     """
     roster = load_roster()
 
     units = []
+    caps_by_vid = {}
+    names_by_vid = {}
     seen_vids = set()
     for match_group in state["matched_volunteers"]:
         need_set = state["need_sets"][match_group["need_set_index"]]
@@ -1578,10 +1658,13 @@ def score_volunteers_node(state: GraphState) -> dict:
             vol_rows = roster[roster["volunteer_id"] == vid]
             if vol_rows.empty:
                 continue
+            vol = vol_rows.iloc[0]
+            caps_by_vid[vid] = compute_cap_reasons(state, need_set, vol)
+            names_by_vid[vid] = vol["preferred_name"]
             units.append({
                 "volunteer_id": vid,
                 "shared_ctx": shared_ctx,
-                "profile": build_volunteer_profile(vol_rows.iloc[0]),
+                "profile": build_volunteer_profile(vol),
             })
 
     scores = run_scoring_waves(units)
@@ -1603,7 +1686,7 @@ def score_volunteers_node(state: GraphState) -> dict:
         selections = score["raw_selections"]
         recs.append({
             "volunteer_id": vid,
-            "tier": "Technical Match",   # provisional until S4 tier mapping
+            "tier": "Technical Match",     # replaced by the mapping below
             "reasoning": "",
             "raw_selections": selections,
             "boxes": [collapse_box(s) for s in selections],
@@ -1615,11 +1698,14 @@ def score_volunteers_node(state: GraphState) -> dict:
         if vid in seen_vids:
             continue
         seen_vids.add(vid)
+        names_by_vid[vid] = am.get("preferred_name", vid)
         recs.append({
             "volunteer_id": vid,
             "tier": "Almost Match",
             "reasoning": f"Blocked by: {am['blocking_requirement']}",
         })
+
+    recs = postprocess_recommendations(recs, caps_by_vid, names_by_vid)
 
     return sanitize_for_state({
         "recommendations": recs,
