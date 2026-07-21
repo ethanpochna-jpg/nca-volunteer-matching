@@ -196,3 +196,60 @@ class TestFix12IsRecurringRemoval:
         import inspect
         record_src = inspect.getsource(app.write_request_record_node)
         assert "is_recurring" in record_src
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 1: mandatory certs derive from work type, not checkboxes
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix1CertsFromWorkType:
+    def _tutoring_roster(self):
+        return roster_frame(
+            make_volunteer(
+                "V-NATE", "NoCheck Nate",
+                skills="Tutoring - Math",
+                certifications="",
+            ),
+            make_volunteer(
+                "V-CLARA", "Cleared Clara",
+                skills="Tutoring - Math",
+                certifications=(
+                    "Background Check - Cleared;"
+                    "Child Safety Training - Completed"
+                ),
+            ),
+        )
+
+    def test_zero_confirmed_skills_still_requires_youth_certs(self, app):
+        """The executed audit case: unchecked boxes must not disable policy."""
+        ns = make_need_set(
+            description="Math tutor for kids",
+            applicable_skills=["Tutoring - Math"],
+        )
+        result = run_matching_defaults(
+            app, ns, self._tutoring_roster(), confirmed_skills=[],
+        )
+        assert result["matched"] == ["V-CLARA"]
+        nate_blocks = [
+            am for am in result["almost_matched"]
+            if am["volunteer_id"] == "V-NATE"
+        ]
+        assert nate_blocks
+        assert nate_blocks[0]["blocking_requirement"] == "Required Certifications"
+
+    def test_confirmed_skills_outside_need_set_also_trigger(self, app):
+        """Union semantics: confirmed ∪ applicable, not intersection."""
+        ns = make_need_set(description="General help", applicable_skills=[])
+        result = run_matching_defaults(
+            app, ns, self._tutoring_roster(),
+            confirmed_skills=["Tutoring - Math"],
+        )
+        assert result["matched"] == ["V-CLARA"]
+
+    def test_no_work_type_means_no_policy_certs(self, app):
+        """Neutral work stays neutral — Nate matches when nothing triggers."""
+        ns = make_need_set(description="Event help", applicable_skills=["Event Support"])
+        result = run_matching_defaults(
+            app, ns, self._tutoring_roster(), confirmed_skills=[],
+        )
+        assert set(result["matched"]) == {"V-NATE", "V-CLARA"}

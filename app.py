@@ -1047,8 +1047,15 @@ def run_matching(
 
     required_skills = set(confirmed_skills)
 
-    # Certs: explicit form selections + policy-mandated certs
-    mandatory_certs = infer_mandatory_certs(confirmed_skills)
+    # Certs: explicit form selections + policy-mandated certs.
+    # Fix 1 — safety fails closed: the policy basis is the need set's WORK
+    # TYPE (applicable_skills ∪ confirmed_skills), never checkbox diligence
+    # alone.  With zero confirmed skills a youth-tutoring request must still
+    # require Background Check + Child Safety.  Accepted trade-off: the
+    # classifier's inclusive suggestions can over-trigger certs; the review
+    # step displays them as the mitigation.
+    policy_basis = set(confirmed_skills) | set(need_set.get("applicable_skills", []))
+    mandatory_certs = infer_mandatory_certs(sorted(policy_basis))
     required_certs = set(form_certs) | set(mandatory_certs)
 
     # Languages: form selections join AND; classifier may add OR logic.
@@ -1986,12 +1993,14 @@ def render_skills_review_stage():
     # Compute unchecked skills for soft-preference forwarding
     unchecked = [s for s in extracted if s not in confirmed]
 
-    # Show what mandatory certs will be auto-added
-    auto_certs = infer_mandatory_certs(confirmed)
+    # Show what mandatory certs will be auto-added.  Fix 1 mirror: computed
+    # from extracted ∪ confirmed — the same work-type basis the matcher
+    # enforces — so the user sees the certs even with nothing checked.
+    auto_certs = infer_mandatory_certs(sorted(set(extracted) | set(confirmed)))
     if auto_certs:
         st.caption(
-            f"🔒 Auto-added certifications based on confirmed skills: "
-            f"{', '.join(auto_certs)}"
+            f"🔒 Auto-added certifications based on the type of work "
+            f"identified: {', '.join(auto_certs)}"
         )
 
     # ── Action buttons ─────────────────────────────────────────────────
