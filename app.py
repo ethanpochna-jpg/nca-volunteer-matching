@@ -52,90 +52,21 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — IMPORTS
 # ═══════════════════════════════════════════════════════════════════════════════
+# app.py is UI only (Phase 4): every schema, constant, matcher rule, LLM
+# helper, scoring stage, and persistence path lives in core/ — this file
+# renders the three Streamlit stages and calls through the modules.
+
+import os                       # File-existence checks for data files
+import uuid                     # Unique IDs for graph threads
+from datetime import date, timedelta  # Form defaults and the date guard
 
 import streamlit as st          # UI framework for the multi-step form interface
-import pandas as pd             # Tabular data handling for roster and assignments
-import json                     # Serialization for LLM outputs and request records
-import os                       # File-existence checks for data files
-import random                   # Jitter for the scorer's single per-item retry
-import re                       # Multi-delimiter parsing for roster fields
-import sqlite3                  # Request-record persistence (stdlib — no ORM)
-import time                     # Backoff sleep for the scorer's single retry
-import uuid                     # Unique IDs for graph threads and request records
-from concurrent.futures import ThreadPoolExecutor  # 16-call scoring waves
-from datetime import date, datetime, timedelta  # Date arithmetic for notice periods
-from typing import TypedDict, Optional, Literal # Type hints for graph state
-
-# Pydantic enforces schema compliance on LLM outputs so that a malformed
-# classifier response crashes loudly rather than silently producing wrong
-# matches downstream.  This is the single most important guardrail in the
-# system: if the LLM hallucinates a field name or type, Pydantic rejects it.
-from pydantic import BaseModel, Field
-
-# LangGraph manages the stateful orchestration graph.  StateGraph passes
-# typed state between nodes; InMemorySaver checkpoints state so we can
-# interrupt (for human-in-the-loop skills confirmation) and resume.
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
-
-# Native Anthropic SDK — every LLM stage (classifier / scorer / reasoning)
-# goes through the helpers in SECTION 6B.  No LangChain LLM wrappers:
-# structured output binds via native output_config.format (json_schema),
-# which is the sanctioned path on a thinking-enabled call (PLAN §1b) —
-# never forced tool choice.
-import anthropic
 
 # Load .env so ANTHROPIC_API_KEY is available without hardcoding it.
 from dotenv import load_dotenv
 load_dotenv()
 
-# Phase 4 (in progress): symbols moved verbatim into core/ are imported
-# back into this namespace so the remaining single-file code is untouched;
-# the final UI-only commit strips these re-exports.
-from core.schemas import (
-    json_safe_default, json_dumps_safe, sanitize_for_state,
-    FlexibleRequirement, NeedSet, ClassifierOutput, GraphState,
-)
-from core.policy import (
-    VALID_SKILLS, VALID_CERTS_CLEARABLE, VALID_LANGUAGES, VALID_DAYS,
-    VALID_TIME_BLOCKS, VALID_AREAS, VALUE_ALIASES, MANDATORY_CERT_RULES,
-    YOUTH_FACING_SKILLS, FOOD_HANDLING_SKILLS, DRIVING_SKILLS,
-    infer_mandatory_certs,
-)
-from core.matching import (
-    ROSTER_PATH, ASSIGNMENTS_PATH, load_roster, load_assignments,
-    canonicalize_value, truncate_text, summarize_soft_preference_violations,
-    compute_volunteer_history, run_matching,
-)
-from core.llm import (
-    CLASSIFIER_MODEL, SCORER_MODEL, REASONING_MODEL,
-    call_classifier, call_likert_item, call_reasoning,
-)
-from core.scoring import (
-    LIKERT_ITEMS, SCORE_MAP, SCORING_UNAVAILABLE_NOTE, collapse_box,
-    build_scorer_shared_context, build_volunteer_profile, run_scoring_waves,
-    compute_cap_reasons, postprocess_recommendations, build_gap_notes,
-)
-from core.reasoning import build_reasoning_bundle, fetch_reasoning
-from core.records import (
-    REQUESTS_DB_PATH, SCHEMA_VERSION, db_connect, init_request_db,
-    insert_request_record, log_reasoning_event,
-)
-from core.graph import build_graph
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — CONFIGURATION & CONSTANTS
-# ═══════════════════════════════════════════════════════════════════════════════
-# Every enum list below was extracted directly from the roster CSV.  The
-# classifier and matcher both reference these so that vocabulary is aligned
-# end-to-end: if a value isn't in these lists, it can't appear in the roster
-# and would silently fail matching.
-
-
-
-
-
+from core import graph, llm, matching, policy, reasoning, records
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -161,32 +92,32 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         st.markdown("**Models in use**")
-        st.caption(f"Classifier: `{CLASSIFIER_MODEL}`")
-        st.caption(f"Scorer: `{SCORER_MODEL}`")
-        st.caption(f"Reasoning: `{REASONING_MODEL}`")
+        st.caption(f"Classifier: `{llm.CLASSIFIER_MODEL}`")
+        st.caption(f"Scorer: `{llm.SCORER_MODEL}`")
+        st.caption(f"Reasoning: `{llm.REASONING_MODEL}`")
 
         st.divider()
         st.markdown("**Data Files**")
-        st.caption(f"Roster: `{ROSTER_PATH}`")
-        st.caption(f"Assignments: `{ASSIGNMENTS_PATH}`")
-        st.caption(f"Requests DB: `{REQUESTS_DB_PATH}`")
+        st.caption(f"Roster: `{matching.ROSTER_PATH}`")
+        st.caption(f"Assignments: `{matching.ASSIGNMENTS_PATH}`")
+        st.caption(f"Requests DB: `{records.REQUESTS_DB_PATH}`")
         st.caption("Demo dataset — resets on redeploy.")
 
     # ── Session state initialization ───────────────────────────────────
     if "stage" not in st.session_state:
         st.session_state["stage"] = "input"
     if "graph" not in st.session_state:
-        st.session_state["graph"] = build_graph()
+        st.session_state["graph"] = graph.build_graph()
     if "thread_id" not in st.session_state:
         st.session_state["thread_id"] = str(uuid.uuid4())
 
     # ── Verify data files exist ────────────────────────────────────────
-    if not os.path.exists(ROSTER_PATH):
-        st.error(f"Roster file not found: `{ROSTER_PATH}`. Place it in the app directory.")
+    if not os.path.exists(matching.ROSTER_PATH):
+        st.error(f"Roster file not found: `{matching.ROSTER_PATH}`. Place it in the app directory.")
         st.stop()
-    if not os.path.exists(ASSIGNMENTS_PATH):
+    if not os.path.exists(matching.ASSIGNMENTS_PATH):
         st.error(
-            f"Assignments file not found: `{ASSIGNMENTS_PATH}`. "
+            f"Assignments file not found: `{matching.ASSIGNMENTS_PATH}`. "
             f"Place it in the app directory."
         )
         st.stop()
@@ -194,10 +125,10 @@ def main():
     # ── Seed the demo request history on first run (S7) ────────────────
     # requests.db is generated and gitignored; a fresh deploy (or reboot
     # of the ephemeral container) rebuilds it from the seed script.
-    if not os.path.exists(REQUESTS_DB_PATH):
+    if not os.path.exists(records.REQUESTS_DB_PATH):
         from data.seed_requests import seed_database
-        init_request_db()
-        with db_connect() as conn:
+        records.init_request_db()
+        with records.db_connect() as conn:
             seed_database(conn)
 
     # ── Stage dispatch ─────────────────────────────────────────────────
@@ -242,7 +173,7 @@ def render_input_stage():
     with col1:
         form_certs = st.multiselect(
             "Required Certifications",
-            options=VALID_CERTS_CLEARABLE,
+            options=policy.VALID_CERTS_CLEARABLE,
             help="Only volunteers with ALL selected certifications will match. "
                  "Policy-mandated certs (e.g., Background Check for tutoring) "
                  "are added automatically based on skills.",
@@ -251,7 +182,7 @@ def render_input_stage():
     with col2:
         form_languages = st.multiselect(
             "Required Languages",
-            options=VALID_LANGUAGES,
+            options=policy.VALID_LANGUAGES,
             help="Only volunteers who speak ALL selected languages will match.",
         )
 
@@ -420,7 +351,7 @@ def render_skills_review_stage():
     # Show what mandatory certs will be auto-added.  Fix 1 mirror: computed
     # from extracted ∪ confirmed — the same work-type basis the matcher
     # enforces — so the user sees the certs even with nothing checked.
-    auto_certs = infer_mandatory_certs(sorted(set(extracted) | set(confirmed)))
+    auto_certs = policy.infer_mandatory_certs(sorted(set(extracted) | set(confirmed)))
     if auto_certs:
         st.caption(
             f"🔒 Auto-added certifications based on the type of work "
@@ -434,7 +365,7 @@ def render_skills_review_stage():
         if st.button("← Back to Input", use_container_width=True):
             st.session_state["stage"] = "input"
             st.session_state["thread_id"] = str(uuid.uuid4())
-            st.session_state["graph"] = build_graph()
+            st.session_state["graph"] = graph.build_graph()
             st.rerun()
 
     with col_confirm:
@@ -475,7 +406,7 @@ def render_results_stage():
     """
 
     state = st.session_state["final_state"]
-    roster = load_roster()
+    roster = matching.load_roster()
 
     st.subheader("📊 Volunteer Recommendations")
 
@@ -551,7 +482,7 @@ def render_results_stage():
                         st.caption(rec["reasoning"])  # scoring-unavailable note
 
                     if st.button("💬 Get reasoning", key=f"reason_{vid}"):
-                        bundle = build_reasoning_bundle(
+                        bundle = reasoning.build_reasoning_bundle(
                             state.get("user_prompt", ""),
                             ns_desc_by_vid.get(vid, ""),
                             state.get("soft_preferences", ""),
@@ -560,12 +491,12 @@ def render_results_stage():
                         )
                         fresh = cache_key not in cache
                         with st.spinner("Fetching reasoning..."):
-                            event = fetch_reasoning(bundle, tier, cache, cache_key)
+                            event = reasoning.fetch_reasoning(bundle, tier, cache, cache_key)
                         # S7: one reasoning_events row per button FETCH
                         # (reruns replay from cache and log nothing).
                         request_id = state.get("request_record", {}).get("request_id")
                         if fresh and request_id:
-                            log_reasoning_event(request_id, vid, event)
+                            records.log_reasoning_event(request_id, vid, event)
                         st.rerun()
 
                 # ── Volunteer details in 3 columns ─────────────────
@@ -688,7 +619,7 @@ def render_results_stage():
     if st.button("🔄 New Request", type="primary", use_container_width=True):
         st.session_state["stage"] = "input"
         st.session_state["thread_id"] = str(uuid.uuid4())
-        st.session_state["graph"] = build_graph()
+        st.session_state["graph"] = graph.build_graph()
         st.rerun()
 
 
