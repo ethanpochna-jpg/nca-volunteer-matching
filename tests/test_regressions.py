@@ -1259,6 +1259,117 @@ class TestS7Seed:
         conn.close()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3 — permanent guards for behavior that already works.
+# If one of these goes red, the change is wrong — not the test.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestGuardCommittedHours:
+    def test_messy_frame_iso_week_exactly_five(self, app):
+        """The canonical messy 5-row frame: exactly 5.0 committed hours in
+        the ISO week of 2026-07-23 (Mon 07-20 … Sun 07-26).
+
+        Covers status normalization (Confirmed/COMPLETE variants count;
+        no-show variants don't), unparseable dates skipped gracefully,
+        and the prior-week boundary.
+        """
+        raw = assignments_frame([
+            {"volunteer_id": "V-0001", "status": "Confirmed",
+             "start_date": "2026-07-23", "hours_required": 2.0},
+            {"volunteer_id": "V-0001", "status": "COMPLETE",
+             "start_date": "2026-07-24", "hours_required": 3.0},
+            {"volunteer_id": "V-0001", "status": "no-show",
+             "start_date": "2026-07-23", "hours_required": 4.0},
+            {"volunteer_id": "V-0001", "status": "Confirmed",
+             "start_date": "not-a-date", "hours_required": 6.0},
+            {"volunteer_id": "V-0001", "status": "confirmed",
+             "start_date": "2026-07-14", "hours_required": 8.0},
+        ])
+        # Mirror load_assignments' status normalization on the messy input.
+        raw["status"] = raw["status"].apply(app.normalize_assignment_status)
+        assert app.get_committed_hours("V-0001", "2026-07-23", raw) == 5.0
+
+    def test_no_target_date_is_zero(self, app):
+        assert app.get_committed_hours("V-0001", None, assignments_frame()) == 0.0
+
+    def test_unparseable_target_date_is_zero(self, app):
+        assert app.get_committed_hours(
+            "V-0001", "someday", assignments_frame()
+        ) == 0.0
+
+
+class TestGuardDegenerateBranches:
+    def test_na_and_values_do_not_block(self, app):
+        """Runtime-side degeneracy guard: NA/empty AND values are ignored
+        during evaluation, independent of normalization."""
+        assert app.evaluate_flexible_requirement(
+            {"AND": ["", "NA"], "OR": []}, set()
+        )
+
+    def test_empty_values_inside_or_branch_ignored(self, app):
+        assert app.evaluate_flexible_requirement(
+            {"AND": [], "OR": [["", "Mon"]]}, {"Mon"}
+        )
+
+    def test_vacuous_requirement_is_satisfied(self, app):
+        assert app.evaluate_flexible_requirement({"AND": [], "OR": []}, set())
+
+
+class TestGuardPerNeedSetScoping:
+    def test_each_need_set_enforces_only_its_own_skills(self, app, monkeypatch):
+        """Globally-confirmed skills apply per need set only where the
+        classifier assigned them — 'one driver + one intake volunteer'
+        must not demand both skills of every slot."""
+        roster = roster_frame(
+            make_volunteer(
+                "V-DANA", "Dana", skills="Driver",
+                certifications="Driver Authorization - Approved",
+            ),
+            make_volunteer(
+                "V-IRIS", "Iris", skills="Intake/Translation",
+                certifications="Food Safety - Basic",
+            ),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(
+            confirmed_skills=["Driver", "Intake/Translation"],
+            need_sets=[
+                make_need_set(description="Delivery driver",
+                              applicable_skills=["Driver"]),
+                make_need_set(description="Intake volunteer",
+                              applicable_skills=["Intake/Translation"]),
+            ],
+        )
+        out = app.match_volunteers_node(state)
+        driver_ns, intake_ns = out["matched_volunteers"]
+        assert driver_ns["matched_volunteer_ids"] == ["V-DANA"]
+        assert intake_ns["matched_volunteer_ids"] == ["V-IRIS"]
+
+
+class TestGuardSanitizeForState:
+    def test_numpy_and_pandas_scalars_round_trip(self, app):
+        import numpy as np
+        raw = {
+            "an_int": np.int64(7),
+            "a_float": np.float64(2.5),
+            "a_bool": np.bool_(True),
+            "a_ts": pd.Timestamp("2026-07-23T10:00:00"),
+            "nested": [{"n": np.int64(1)}, (np.float64(0.5),)],
+        }
+        clean = app.sanitize_for_state(raw)
+        assert clean["an_int"] == 7 and type(clean["an_int"]) is int
+        assert clean["a_float"] == 2.5 and type(clean["a_float"]) is float
+        assert clean["a_bool"] is True
+        assert clean["a_ts"] == "2026-07-23T10:00:00"
+        assert clean["nested"][0]["n"] == 1
+        assert clean["nested"][1] == [0.5]
+
+    def test_plain_data_idempotent(self, app):
+        plain = {"a": 1, "b": [1.5, "x", True, None], "c": {"d": "e"}}
+        assert app.sanitize_for_state(plain) == plain
+        assert app.sanitize_for_state(app.sanitize_for_state(plain)) == plain
+
+
 class TestS1MigrationComplete:
     def test_no_langchain_or_old_recommender_remnants(self, app):
         """PLAN Phase 2 exit grep, enforced early: the old single-call
