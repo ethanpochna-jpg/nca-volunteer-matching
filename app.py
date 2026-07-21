@@ -117,6 +117,10 @@ from core.scoring import (
     compute_cap_reasons, postprocess_recommendations, build_gap_notes,
 )
 from core.reasoning import build_reasoning_bundle, fetch_reasoning
+from core.records import (
+    REQUESTS_DB_PATH, SCHEMA_VERSION, db_connect, init_request_db,
+    insert_request_record, log_reasoning_event,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -127,10 +131,6 @@ from core.reasoning import build_reasoning_bundle, fetch_reasoning
 # end-to-end: if a value isn't in these lists, it can't appear in the roster
 # and would silently fail matching.
 
-# requests.db is generated (gitignored), WAL-mode SQLite, seeded on first
-# run by data/seed_requests.py.  Roster/assignments paths live in
-# core.matching beside their loaders.
-REQUESTS_DB_PATH = "requests.db"
 
 
 
@@ -220,114 +220,6 @@ def score_volunteers_node(state: GraphState) -> dict:
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 7D — REQUEST-RECORD PERSISTENCE (S7)
-# ═══════════════════════════════════════════════════════════════════════════════
-# stdlib sqlite3, WAL mode, short-lived connections, writes in transactions.
-# The requests table is BORN at schema_version 2 (D3 — no CSV, no v1, no
-# migration; nothing existed before this).  Schema changes from here on
-# require bumping schema_version and a migration note in the commit body.
-# reasoning_events is APPEND-ONLY: INSERT is the only statement ever
-# issued against it — dissent rate is a queryable QA metric for the
-# future Insights Agent.
-
-SCHEMA_VERSION = 2
-
-_REQUESTS_COLUMNS = [
-    "request_id", "schema_version", "timestamp", "user_prompt",
-    "soft_preferences", "unchecked_skills", "request_source",
-    "need_sets_json", "confirmed_skills_json", "extracted_skills_json",
-    "form_certs_json", "form_languages_json", "has_specific_date",
-    "target_date", "notification_date", "is_recurring",
-    "matched_volunteers_json", "margins_json", "counterfactuals_json",
-    "almost_matched_json", "recommendations_json", "gap_notes",
-    "resulting_assignment_ids",
-]
-
-
-def db_connect(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """Short-lived WAL connection; every writer opens its own."""
-    conn = sqlite3.connect(db_path or REQUESTS_DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
-
-
-def init_request_db(db_path: Optional[str] = None) -> None:
-    """Create both tables if absent.  Idempotent."""
-    with db_connect(db_path) as conn:
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS requests (
-                request_id TEXT PRIMARY KEY,
-                schema_version INTEGER NOT NULL DEFAULT {SCHEMA_VERSION},
-                timestamp TEXT NOT NULL,
-                user_prompt TEXT NOT NULL,
-                soft_preferences TEXT,
-                unchecked_skills TEXT,
-                request_source TEXT,
-                need_sets_json TEXT,
-                confirmed_skills_json TEXT,
-                extracted_skills_json TEXT,
-                form_certs_json TEXT,
-                form_languages_json TEXT,
-                has_specific_date INTEGER,
-                target_date TEXT,
-                notification_date TEXT,
-                is_recurring INTEGER,
-                matched_volunteers_json TEXT,
-                margins_json TEXT,
-                counterfactuals_json TEXT,
-                almost_matched_json TEXT,
-                recommendations_json TEXT,
-                gap_notes TEXT,
-                resulting_assignment_ids TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS reasoning_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                request_id TEXT NOT NULL,
-                volunteer_id TEXT NOT NULL,
-                tier TEXT NOT NULL,
-                model TEXT NOT NULL,
-                text TEXT NOT NULL,
-                dissent INTEGER NOT NULL CHECK (dissent IN (0, 1)),
-                created_at TEXT NOT NULL
-            )
-        """)
-
-
-def insert_request_record(record: dict, db_path: Optional[str] = None) -> None:
-    """One request row, one transaction."""
-    placeholders = ", ".join(f":{col}" for col in _REQUESTS_COLUMNS)
-    with db_connect(db_path) as conn:
-        conn.execute(
-            f"INSERT INTO requests ({', '.join(_REQUESTS_COLUMNS)}) "
-            f"VALUES ({placeholders})",
-            record,
-        )
-
-
-def log_reasoning_event(request_id: str, volunteer_id: str, event: dict,
-                        db_path: Optional[str] = None) -> None:
-    """Append one reasoning event — one row per button fetch.
-
-    INSERT only; this table is never UPDATEd and never DELETEd from.
-    """
-    with db_connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO reasoning_events "
-            "(request_id, volunteer_id, tier, model, text, dissent, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                request_id,
-                volunteer_id,
-                event["tier"],
-                event["model"],
-                event["text"],
-                1 if event.get("dissent") else 0,
-                datetime.now().isoformat(),
-            ),
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
