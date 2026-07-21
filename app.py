@@ -1429,6 +1429,29 @@ def match_volunteers_node(state: GraphState) -> dict:
     roster = load_roster()
     assignments = load_assignments()
 
+    # ── Pass 1 (fix 3): every need set's matched pool vs the FULL roster ──
+    # Greedy claiming in roster order strands feasible assignments (executed
+    # proof: the only Spanish+Car volunteer was claimed by the Spanish slot,
+    # leaving the driver slot unfilled although a two-slot assignment
+    # existed).  These full pools feed the scarcity ranking below; the
+    # authoritative matching still runs against the depleted roster.
+    full_pools: list[set] = []
+    for need_set in state["need_sets"]:
+        ns_applicable = set(need_set.get("applicable_skills", []))
+        ns_confirmed = [s for s in state["confirmed_skills"] if s in ns_applicable]
+        pool_result = run_matching(
+            need_set=need_set,
+            confirmed_skills=ns_confirmed,
+            form_certs=state["form_certs"],
+            form_languages=state["form_languages"],
+            has_specific_date=state["has_specific_date"],
+            target_date_str=state["target_date"],
+            notification_date_str=state["notification_date"],
+            roster_df=roster,
+            assignments_df=assignments,
+        )
+        full_pools.append(set(pool_result["matched"]))
+
     all_matched = []
     all_margins = {}
     all_counterfactuals = {}
@@ -1475,7 +1498,22 @@ def match_volunteers_node(state: GraphState) -> dict:
 
         all_almost.extend(match_result["almost_matched"])
 
-        for vid in ns_matched[:need_set.get("count", 1)]:
+        # ── Pass 2 (fix 3): claim by scarcity, not roster order ────────
+        # Volunteers useful to the FEWEST other need sets are claimed
+        # first, preserving multi-pool volunteers for the slots that can
+        # only be filled by them.  Tie-break is pool order, so single-
+        # need-set behavior is byte-identical to the old greedy claim.
+        def _other_pool_count(vid, _idx=ns_idx):
+            return sum(
+                1 for j, pool in enumerate(full_pools)
+                if j != _idx and vid in pool
+            )
+
+        claim_order = sorted(
+            ns_matched,
+            key=lambda v: (_other_pool_count(v), ns_matched.index(v)),
+        )
+        for vid in claim_order[:need_set.get("count", 1)]:
             claimed_vids.add(vid)
 
     # Compute assignment history for all relevant volunteers

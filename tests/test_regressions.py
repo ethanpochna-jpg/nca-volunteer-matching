@@ -7,6 +7,7 @@ Layout (kept in PLAN order as fixes land):
   Phase 3  — permanent guards
 """
 
+from tests.conftest import patch_loaders
 from tests.fixtures import (  # noqa: F401  (builders used as fixes land)
     assignments_frame,
     make_need_set,
@@ -253,3 +254,63 @@ class TestFix1CertsFromWorkType:
             app, ns, self._tutoring_roster(), confirmed_skills=[],
         )
         assert set(result["matched"]) == {"V-NATE", "V-CLARA"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 3: scarcity-aware claiming across need sets
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix3ScarcityAwareClaiming:
+    def test_two_slot_request_fills_both_slots(self, app, monkeypatch):
+        """The executed proof: Ana (Spanish+Car) must be left for the
+        driver slot; Bea (Spanish only) covers the intake slot."""
+        # Ana precedes Bea in roster order — the old greedy claim took Ana
+        # for the Spanish slot and left the driver slot unfillable.
+        roster = roster_frame(
+            make_volunteer("V-ANA", "Ana", languages="Spanish;English",
+                           transportation="Car"),
+            make_volunteer("V-BEA", "Bea", languages="Spanish;English",
+                           transportation="Public Transit"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(need_sets=[
+            make_need_set(description="Spanish-speaking intake volunteer",
+                          languages={"AND": ["Spanish"], "OR": []}),
+            make_need_set(description="Delivery driver",
+                          transportation_needed="Car"),
+        ])
+        out = app.match_volunteers_node(state)
+        intake, driver = out["matched_volunteers"]
+        assert set(intake["matched_volunteer_ids"]) == {"V-ANA", "V-BEA"}
+        assert driver["matched_volunteer_ids"] == ["V-ANA"]
+
+    def test_tie_claims_in_pool_order(self, app, monkeypatch):
+        """Equal scarcity → first-in-pool claimed, deterministically."""
+        roster = roster_frame(
+            make_volunteer("V-0001", "First"),
+            make_volunteer("V-0002", "Second"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(need_sets=[
+            make_need_set(description="Helper A"),
+            make_need_set(description="Helper B"),
+        ])
+        out = app.match_volunteers_node(state)
+        first_ns, second_ns = out["matched_volunteers"]
+        assert first_ns["matched_volunteer_ids"] == ["V-0001", "V-0002"]
+        # V-0001 claimed by NS0 (pool-order tie-break) → NS1 sees only V-0002
+        assert second_ns["matched_volunteer_ids"] == ["V-0002"]
+
+    def test_single_need_set_behavior_unchanged(self, app, monkeypatch):
+        """One need set ⇒ scarcity is always zero ⇒ old behavior exactly."""
+        roster = roster_frame(
+            make_volunteer("V-0001", "A"),
+            make_volunteer("V-0002", "B"),
+            make_volunteer("V-0003", "C"),
+        )
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        state = make_state(need_sets=[make_need_set(count=2)])
+        out = app.match_volunteers_node(state)
+        assert out["matched_volunteers"][0]["matched_volunteer_ids"] == [
+            "V-0001", "V-0002", "V-0003"
+        ]
