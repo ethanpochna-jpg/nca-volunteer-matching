@@ -39,3 +39,58 @@ def patch_loaders(monkeypatch, app, roster_df, assignments_df):
     """
     monkeypatch.setattr(app, "load_roster", lambda: roster_df)
     monkeypatch.setattr(app, "load_assignments", lambda: assignments_df)
+
+
+def make_mock_anthropic(captured: list, payloads: list):
+    """Anthropic client on an httpx.MockTransport — no test touches the
+    network; LLM configuration is asserted via the captured request bodies
+    (the SDK's real serialization, exactly what would go on the wire).
+
+    payloads entries, consumed in order (last repeats):
+      str        → 200 response with one text block containing the string
+      list       → 200 response with that literal content-block list
+      int        → that HTTP status with an API-style error body
+    """
+    import json as _json
+
+    import anthropic
+    import httpx
+
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content)
+        captured.append(body)
+        idx = min(call_count["n"], len(payloads) - 1)
+        call_count["n"] += 1
+        payload = payloads[idx]
+        if isinstance(payload, int):
+            return httpx.Response(payload, json={
+                "type": "error",
+                "error": {"type": "api_error", "message": "mocked failure"},
+            })
+        content = (
+            payload if isinstance(payload, list)
+            else [{"type": "text", "text": payload}]
+        )
+        return httpx.Response(200, json={
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "model": body.get("model", "mock"),
+            "content": content,
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+    return anthropic.Anthropic(
+        api_key="test-key",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def patch_llm(monkeypatch, app, captured: list, payloads: list):
+    """Route all three call helpers through a mocked-transport client."""
+    client = make_mock_anthropic(captured, payloads)
+    monkeypatch.setattr(app, "get_anthropic_client", lambda: client)
+    return client

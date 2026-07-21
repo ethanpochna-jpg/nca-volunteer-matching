@@ -4,7 +4,7 @@
 ║  GBA 479 Final Project Prototype  (v3 — Definitive)                        ║
 ║                                                                            ║
 ║  Architecture:  LangGraph state-graph with human-in-the-loop               ║
-║  Model:         OpenAI GPT (configurable in sidebar)                       ║
+║  Models:        Anthropic — Opus 4.8 / Haiku 4.5 / Sonnet 4.6 (fixed)      ║
 ║  Interface:     Streamlit multi-step form                                  ║
 ║                                                                            ║
 ║  Graph flow:                                                               ║
@@ -44,7 +44,7 @@
 ║       dtype alignment + volunteer_id stripping.                            ║
 ║                                                                            ║
 ║  Run:  streamlit run app.py                                                ║
-║  Deps: pip install streamlit langgraph langchain-openai pandas openpyxl    ║
+║  Deps: pip install streamlit langgraph anthropic pandas openpyxl           ║
 ║        python-dotenv pydantic                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -74,12 +74,14 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
-# LangChain's OpenAI wrapper provides .with_structured_output(), which uses
-# OpenAI function-calling under the hood to guarantee schema-valid JSON.
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+# Native Anthropic SDK — every LLM stage (classifier / scorer / reasoning)
+# goes through the helpers in SECTION 6B.  No LangChain LLM wrappers:
+# structured output binds via native output_config.format (json_schema),
+# which is the sanctioned path on a thinking-enabled call (PLAN §1b) —
+# never forced tool choice.
+import anthropic
 
-# Load .env so OPENAI_API_KEY is available without hardcoding it.
+# Load .env so ANTHROPIC_API_KEY is available without hardcoding it.
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -565,31 +567,6 @@ class ClassifierOutput(BaseModel):
     )
 
 
-class VolunteerRecommendation(BaseModel):
-    """A single volunteer's recommendation entry from the recommender."""
-    volunteer_id: str
-    # Literal type constraint (from app_4/5) prevents the LLM from inventing tiers
-    tier: Literal["Perfect Match", "Good Match", "Technical Match", "Almost Match"] = Field(
-        description="One of: Perfect Match, Good Match, Technical Match, Almost Match"
-    )
-    reasoning: str = Field(
-        description="Concise explanation citing specific data points"
-    )
-
-
-class RecommenderOutput(BaseModel):
-    """Top-level output from the recommendation LLM call."""
-    recommendations: list[VolunteerRecommendation]
-    configuration_notes: Optional[str] = Field(
-        default=None,
-        description="If multiple volunteers needed, notes on optimal grouping"
-    )
-    gap_notes: Optional[str] = Field(
-        default=None,
-        description="If insufficient matches, explain gaps and suggest next steps"
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — LANGGRAPH STATE DEFINITION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -720,72 +697,143 @@ Areas: {json.dumps(VALID_AREAS)}
 Any value not in these lists will fail matching silently."""
 
 
-# ── Recommender system prompt ─────────────────────────────────────────────
-# From app_5's design: purely instructional, no dynamic data.  All request-
-# specific and volunteer-specific data goes in the human message.  The prompt
-# is explicit about what the LLM should NOT use for ranking, since those
-# factors are handled deterministically and displayed separately.
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6B — ANTHROPIC CLIENT & CALL HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+# All model access flows through these three helpers (PLAN §1a — fixed model
+# matrix, no UI selector).  Design rules baked in:
+#   - Classifier (Opus 4.8): explicit adaptive thinking + medium effort; NO
+#     temperature (the parameter is rejected outright on Opus 4.8);
+#     structured output via native output_config.format — never forced tool
+#     choice on a thinking-enabled call.
+#   - Scorer items (Haiku 4.5): temperature 0.2, tiny {selection: 1–5} schema.
+#   - Reasoning (Sonnet 4.6): temperature 0.2, plain text, ~200 tokens.
+# The client is a lazy singleton so importing this module never requires a
+# key, and max_retries=0 so the scorer's single jittered retry (S3) is the
+# only retry layer in the stack — deterministic under test.
 
-RECOMMENDER_SYSTEM_PROMPT = """You are the Volunteer Recommendation Specialist for Northbridge Community Alliance.
+CLASSIFIER_MODEL = "claude-opus-4-8"
+SCORER_MODEL = "claude-haiku-4-5"
+REASONING_MODEL = "claude-sonnet-4-6"
 
-ROLE:
-You receive already-eligible matched volunteers plus almost-matched volunteers.
-All matched volunteers have already passed the hard filters. Rank only on soft fit.
+_ANTHROPIC_CLIENT: Optional[anthropic.Anthropic] = None
 
-ONLY USE THESE FACTORS FOR RANKING MATCHED VOLUNTEERS:
-- Role fit / preferred roles alignment with the task
-- Relevant skills and certifications beyond the minimum
-- Language fit (especially when soft preferences mention language)
-- Transportation fit
-- Availability days and time blocks, especially interpreting soft scheduling preferences
-- Natural-language notes and availability notes
-- Explicit soft preference flags provided in the input
 
-DO NOT USE THESE AS RANKING FACTORS (they are handled deterministically):
-- Capacity metrics (hours remaining, max hours)
-- Assignment history (total assignments, no-show rate)
-- Home area
-These are displayed to the user separately and should not influence your tiering.
+def _resolve_api_key() -> Optional[str]:
+    """st.secrets first (Streamlit Cloud), environment second (local .env).
 
-═══════════════════════════════════════════════════════════════
-TIER DEFINITIONS — assign exactly one tier per volunteer
-═══════════════════════════════════════════════════════════════
+    st.secrets RAISES when no secrets file exists, so the try/except is
+    load-bearing for local runs.
+    """
+    try:
+        return st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        return os.environ.get("ANTHROPIC_API_KEY")
 
-- Perfect Match: FROM MATCHED GROUP ONLY. Strongest soft fit. Preferred roles
-  align with the task, availability is natural, soft preferences are satisfied,
-  notes suggest enthusiasm for this type of work. This is who you'd call first.
-  A volunteer CANNOT be Perfect Match if they violate any soft preference.
 
-- Good Match: FROM MATCHED GROUP ONLY. Strong fit, but weaker than Perfect.
-  May be missing one or more soft preferences but is otherwise solid. A volunteer
-  who lacks soft-preference attributes cannot be Perfect Match — Good Match at best.
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Lazy client singleton.
 
-- Technical Match: FROM MATCHED GROUP ONLY. Passes hard requirements but the role
-  doesn't align with their stated preferences, or schedule is tight, or this feels
-  outside what they signed up for.
+    Tests monkeypatch THIS function with a mocked-transport client, so no
+    code below it ever needs patching.
+    """
+    global _ANTHROPIC_CLIENT
+    if _ANTHROPIC_CLIENT is None:
+        _ANTHROPIC_CLIENT = anthropic.Anthropic(
+            api_key=_resolve_api_key(),
+            max_retries=0,
+        )
+    return _ANTHROPIC_CLIENT
 
-- Almost Match: FROM ALMOST-MATCHED GROUP ONLY. Blocked by exactly one hard
-  requirement. Explain specifically what's blocking them and whether it's resolvable
-  (e.g., "pending certification expected in 2 weeks").
 
-CRITICAL: A volunteer from the ALMOST-MATCHED group must ALWAYS be tiered as
-Almost Match regardless of how good their soft fit appears. No exceptions.
+def _strict_schema(model_cls) -> dict:
+    """model_json_schema() with additionalProperties: false on every object
+    node, as the structured-outputs grammar requires of all objects."""
+    schema = json.loads(json.dumps(model_cls.model_json_schema()))
 
-═══════════════════════════════════════════════════════════════
-IMPORTANT RULES
-═══════════════════════════════════════════════════════════════
+    def _walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" or "properties" in node:
+                node.setdefault("additionalProperties", False)
+            for child in node.values():
+                _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
 
-- You do not need to include every matched volunteer. A deterministic post-processor
-  will add any remaining matched volunteers as Technical Match.
-- Keep reasoning concise and evidence-based — cite specific data points.
-- Only use volunteer_ids that appear in the data provided. Do not invent IDs.
-- Provide configuration_notes for multi-volunteer requests when useful.
-- Provide gap_notes when the pool is thin or insufficient.
+    _walk(schema)
+    return schema
 
-COMMUNICATION TONE (per NCA Brand Guidelines):
-- Respectful, clear, evidence-informed, practical, non-assumptive.
-- Emphasize appreciation and impact when discussing volunteers.
-- Avoid over-promising or guaranteeing availability."""
+
+def _first_text_block(response) -> str:
+    """Adaptive thinking prepends thinking blocks; return the first text one."""
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise ValueError("Model response contained no text block")
+
+
+def call_classifier(prompt_ctx: str) -> ClassifierOutput:
+    """Opus 4.8 need-set extraction with grammar-constrained JSON output."""
+    response = get_anthropic_client().messages.create(
+        model=CLASSIFIER_MODEL,
+        max_tokens=8192,
+        thinking={"type": "adaptive"},
+        output_config={
+            "effort": "medium",
+            "format": {
+                "type": "json_schema",
+                "schema": _strict_schema(ClassifierOutput),
+            },
+        },
+        system=CLASSIFIER_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt_ctx}],
+    )
+    return ClassifierOutput.model_validate(json.loads(_first_text_block(response)))
+
+
+_LIKERT_SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {"selection": {"type": "integer", "enum": [1, 2, 3, 4, 5]}},
+    "required": ["selection"],
+    "additionalProperties": False,
+}
+
+
+def call_likert_item(shared_ctx: str, profile: str, item_text: str) -> int:
+    """One Haiku 4.5 Likert judgment → raw selection 1–5.
+
+    The model returns the raw selection only — box collapse, score mapping,
+    and tier assignment are code-side (I4); the model never sees the word
+    "tier" at scoring time.
+    """
+    response = get_anthropic_client().messages.create(
+        model=SCORER_MODEL,
+        max_tokens=256,
+        temperature=0.2,
+        output_config={
+            "format": {"type": "json_schema", "schema": _LIKERT_SELECTION_SCHEMA},
+        },
+        system=shared_ctx,
+        messages=[{"role": "user", "content": f"{profile}\n\n{item_text}"}],
+    )
+    return int(json.loads(_first_text_block(response))["selection"])
+
+
+def call_reasoning(bundle: str, system_prompt: str) -> str:
+    """One Sonnet 4.6 plain-text reasoning call.
+
+    Transport only — the tier-conditional prompts and dissent detection
+    layer on top in S6 (per-card button, outside the graph).
+    """
+    response = get_anthropic_client().messages.create(
+        model=REASONING_MODEL,
+        max_tokens=200,
+        temperature=0.2,
+        system=system_prompt,
+        messages=[{"role": "user", "content": bundle}],
+    )
+    return _first_text_block(response).strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1306,18 +1354,13 @@ def run_matching(
 def classify_needs_node(state: GraphState) -> dict:
     """LLM node: extracts structured volunteer requirements from natural language.
 
-    Uses with_structured_output to guarantee ClassifierOutput schema.
+    Calls Opus 4.8 through call_classifier (SECTION 6B) — native
+    structured outputs guarantee the ClassifierOutput schema.
     KEY FEATURES:
     - From app_6: soft_preferences field in schema + signal-word prompt
     - From app_4: post-extraction vocabulary sanitization
     - From app_5: skill validation against VALID_SKILLS
     """
-    llm = ChatOpenAI(
-        model=st.session_state.get("model_name", "gpt-5-nano"),
-        temperature=0
-    )
-    structured_llm = llm.with_structured_output(ClassifierOutput)
-
     context_parts = [f"Request: {state['user_prompt']}"]
     if state["form_certs"]:
         context_parts.append(
@@ -1336,10 +1379,7 @@ def classify_needs_node(state: GraphState) -> dict:
 
     user_msg = "\n".join(context_parts)
 
-    result: ClassifierOutput = structured_llm.invoke([
-        SystemMessage(content=CLASSIFIER_SYSTEM_PROMPT),
-        HumanMessage(content=user_msg),
-    ])
+    result = call_classifier(user_msg)
 
     # ── Collect and validate extracted skills ────────────────────────────
     # Fix 10: canonicalize before membership testing — a classifier emitting
@@ -1557,187 +1597,44 @@ def match_volunteers_node(state: GraphState) -> dict:
 
 
 def recommend_node(state: GraphState) -> dict:
-    """LLM node: tiers matched volunteers and generates configuration/gap advice.
+    """Interim deterministic recommender — the S1→S3 bridge.
 
-    KEY DESIGN DECISIONS:
-    1. Prompt compression: only send soft-fit-relevant fields to the LLM.
-       Capacity metrics, history, and home area are displayed deterministically.
-    2. Combined soft preferences: classifier's explicit field + unchecked skills.
-    3. System prompt is purely instructional (from app_5); all data in human msg.
-    4. Post-processing validates tiers (from app_6) and backfills Technical Match
-       for omitted matched volunteers (from app_5).
+    The old single-call LLM recommender is DELETED (not migrated — PLAN
+    §1b); the Likert scoring node replaces this stub in S3.  Until then:
+    every matched volunteer lands as Technical Match and every
+    almost-matched volunteer as Almost Match with a templated blocker
+    note, keeping the graph runnable and the display shape stable at
+    this commit.  This is the same shape as S3's failure fallback.
     """
-    roster = load_roster()
-
-    # ── Build the context document ────────────────────────────────────
-    sections = []
-
-    sections.append("=== ORIGINAL REQUEST ===")
-    sections.append(f"Prompt: {state['user_prompt']}")
-    sections.append(f"Confirmed hard skills: {state['confirmed_skills']}")
-    sections.append(f"Required certs: {state['form_certs']}")
-    sections.append(f"Required languages: {state['form_languages']}")
-    if state["has_specific_date"]:
-        sections.append(f"Target date: {state['target_date']}")
-    # ── Combined soft preferences ──────────────────────────────────────
-    # Two sources: (1) classifier's explicit field, (2) unchecked skills.
-    classifier_soft = state.get("soft_preferences", "")
-    unchecked = state.get("unchecked_skills", [])
-
-    has_soft = classifier_soft or unchecked
-    if has_soft:
-        sections.append("\n=== SOFT PREFERENCES (inform tiering, NOT hard filters) ===")
-        if classifier_soft:
-            sections.append(f"From request language: {classifier_soft}")
-        if unchecked:
-            sections.append(f"Suggested skills not confirmed as required: {unchecked}")
-        sections.append(
-            "Volunteers lacking these should be Good Match at best, never Perfect Match."
-        )
-    else:
-        sections.append("\n=== SOFT PREFERENCES ===")
-        sections.append(
-            "No soft preferences identified. Tier based on hard requirements and fit only."
-        )
-
-    # ── Format MATCHED volunteers (compressed: only soft-fit fields) ───
-    valid_matched_ids = set()
-    valid_almost_ids = set()
-    soft_flags_by_vid = {}  # For rule-based violation detection
-
-    for match_group in state["matched_volunteers"]:
-        ns_desc = match_group["need_set_description"]
-        count_needed = match_group["count_needed"]
-        sections.append(
-            f"\n=== NEED SET: {ns_desc} (need {count_needed} volunteer(s)) ==="
-        )
-
-        for vid in match_group["matched_volunteer_ids"]:
-            valid_matched_ids.add(vid)
-            vol_rows = roster[roster["volunteer_id"] == vid]
-            if vol_rows.empty:
-                continue
-            vol = vol_rows.iloc[0]
-
-            # Rule-based soft-preference violation detection
-            need_set = state["need_sets"][match_group["need_set_index"]]
-            violations = summarize_soft_preference_violations(need_set, vol)
-            if unchecked:
-                vol_skills = parse_semicolon(vol["skills"])
-                missing_soft = [s for s in unchecked if s not in vol_skills]
-                if missing_soft:
-                    violations.append(
-                        f"Missing suggested (not required) skills: {missing_soft}"
-                    )
-            soft_flags_by_vid[vid] = violations
-
-            # Compressed volunteer profile: only what the recommender needs
-            violation_note = f"\n  ⚠ Soft-preference violations: {violations}" if violations else ""
-            sections.append(f"""
-VOLUNTEER: {vol['preferred_name']} ({vid}) — MATCHED{violation_note}
-  Skills: {truncate_text(vol['skills'])}
-  Preferred Roles: {truncate_text(vol.get('preferred_roles', ''))}
-  Certifications: {truncate_text(vol['certifications'])}
-  Availability: {vol['availability_days']} / {vol['availability_time_blocks']}
-  Availability Notes: {truncate_text(vol.get('availability_notes', ''))}
-  Transportation: {vol.get('transportation', 'N/A')}
-  Languages: {vol['languages']}
-  Notes: {truncate_text(vol.get('notes', ''))}""")
-
-    # ── Format ALMOST-MATCHED volunteers ──────────────────────────────
-    if state["almost_matched"]:
-        sections.append(
-            "\n=== ALMOST-MATCHED (blocked by 1 hard requirement) ==="
-        )
-        for am in state["almost_matched"]:
-            vid = am["volunteer_id"]
-            valid_almost_ids.add(vid)
-            vol_rows = roster[roster["volunteer_id"] == vid]
-            pref_roles = ""
-            if not vol_rows.empty:
-                pref_roles = truncate_text(vol_rows.iloc[0].get("preferred_roles", ""))
-
-            sections.append(f"""
-VOLUNTEER: {am['preferred_name']} ({vid}) — ALMOST MATCH
-  BLOCKED BY: {am['blocking_requirement']} (column: {am['blocking_column']})
-  Skills: {truncate_text(am.get('skills', ''))}
-  Preferred Roles: {pref_roles}
-  Certs: {truncate_text(am.get('certifications', ''))}
-  Availability: {am.get('availability_days', '')} / {am.get('availability_time_blocks', '')}
-  Notes: {truncate_text(am.get('notes', ''))}""")
-
-    full_context = "\n".join(sections)
-
-    # ── Call the LLM ──────────────────────────────────────────────────
-    llm = ChatOpenAI(
-        model=st.session_state.get("model_name", "gpt-5-nano"),
-        temperature=0.2
-    )
-    structured_llm = llm.with_structured_output(RecommenderOutput)
-
-    result: RecommenderOutput = structured_llm.invoke([
-        SystemMessage(content=RECOMMENDER_SYSTEM_PROMPT),
-        HumanMessage(content=full_context),
-    ])
-
-    # ── Full post-processing pipeline ─────────────────────────────────
-    # Combines: tier enforcement (app_6), soft-preference demotion (app_5),
-    # Technical Match backfill (app_5), hallucinated-ID filtering (app_4/6).
-
-    all_valid_ids = valid_matched_ids | valid_almost_ids
-    processed_recs = []
+    recs = []
     seen_vids = set()
 
-    for rec in result.recommendations:
-        rec_dict = rec.model_dump()
-        vid = rec_dict["volunteer_id"]
-
-        # Drop hallucinated IDs
-        if vid not in all_valid_ids:
-            continue
-
-        # Force almost-matched → Almost Match (from app_6)
-        if vid in valid_almost_ids and vid not in valid_matched_ids:
-            if rec_dict["tier"] != "Almost Match":
-                rec_dict["tier"] = "Almost Match"
-                rec_dict["reasoning"] = (
-                    f"[Tier corrected — blocked by hard requirement.] "
-                    f"{rec_dict['reasoning']}"
-                )
-
-        # Demote Perfect Match → Good Match if soft violations (from app_5)
-        if (rec_dict["tier"] == "Perfect Match"
-                and soft_flags_by_vid.get(vid)):
-            rec_dict["tier"] = "Good Match"
-            rec_dict["reasoning"] = (
-                f"[Adjusted from Perfect — soft preference gap.] "
-                f"{rec_dict['reasoning']}"
-            )
-
-        seen_vids.add(vid)
-        processed_recs.append(rec_dict)
-
-    # ── Backfill: any matched volunteer the LLM omitted → Technical Match ──
-    # From app_5: ensures every matched volunteer appears in the output.
     for match_group in state["matched_volunteers"]:
         for vid in match_group["matched_volunteer_ids"]:
-            if vid not in seen_vids:
-                vol_rows = roster[roster["volunteer_id"] == vid]
-                name = vol_rows.iloc[0]["preferred_name"] if not vol_rows.empty else vid
-                processed_recs.append({
-                    "volunteer_id": vid,
-                    "tier": "Technical Match",
-                    "reasoning": (
-                        f"{name} passes all hard requirements but was not "
-                        f"explicitly ranked by the recommender."
-                    ),
-                })
-                seen_vids.add(vid)
+            if vid in seen_vids:
+                continue
+            recs.append({
+                "volunteer_id": vid,
+                "tier": "Technical Match",
+                "reasoning": "",
+            })
+            seen_vids.add(vid)
+
+    for am in state["almost_matched"]:
+        vid = am["volunteer_id"]
+        if vid in seen_vids:
+            continue
+        recs.append({
+            "volunteer_id": vid,
+            "tier": "Almost Match",
+            "reasoning": f"Blocked by: {am['blocking_requirement']}",
+        })
+        seen_vids.add(vid)
 
     return sanitize_for_state({
-        "recommendations": processed_recs,
-        "configuration_notes": result.configuration_notes,
-        "gap_notes": result.gap_notes,
+        "recommendations": recs,
+        "configuration_notes": None,
+        "gap_notes": None,
     })
 
 
@@ -1828,17 +1725,13 @@ def main():
         "Describe what you need — the system identifies, filters, and recommends volunteers."
     )
 
-    # ── Sidebar: API configuration ─────────────────────────────────────
+    # ── Sidebar: read-only configuration (D-J: no model selector) ──────
     with st.sidebar:
         st.header("⚙️ Configuration")
-        model_name = st.selectbox(
-            "Model",
-            ["gpt-5-nano", "gpt-5-mini", "gpt-5", "gpt-4o-mini"],
-            index=0,
-            help="gpt-5-nano is fast and cheapest; gpt-5-mini for more complex extraction; "
-                 "gpt-5 for highest quality; gpt-4o-mini as a legacy fallback.",
-        )
-        st.session_state["model_name"] = model_name
+        st.markdown("**Models in use**")
+        st.caption(f"Classifier: `{CLASSIFIER_MODEL}`")
+        st.caption(f"Scorer: `{SCORER_MODEL}`")
+        st.caption(f"Reasoning: `{REASONING_MODEL}`")
 
         st.divider()
         st.markdown("**Data Files**")

@@ -7,7 +7,7 @@ Layout (kept in PLAN order as fixes land):
   Phase 3  — permanent guards
 """
 
-from tests.conftest import patch_loaders
+from tests.conftest import patch_llm, patch_loaders
 from tests.fixtures import (  # noqa: F401  (builders used as fixes land)
     assignments_frame,
     make_need_set,
@@ -100,28 +100,13 @@ class TestFix2OrBranchSubsumption:
 # Phase 1 — fix 10: fuzzy canonicalization for the skills domain
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _fake_classifier(app, monkeypatch, canned_output):
-    """Stub ChatOpenAI so classify_needs_node runs offline.
-
-    Exercises the REAL post-LLM sanitization code; only the network call
-    is replaced.  Dies with the langchain call sites in S1.
-    """
-    class _Fake:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def with_structured_output(self, schema):
-            return self
-
-        def invoke(self, messages):
-            return canned_output
-
-    monkeypatch.setattr(app, "ChatOpenAI", _Fake)
-
-
 class TestFix10SkillsCanonicalization:
     def test_lowercase_skill_survives_into_extracted_skills(self, app, monkeypatch):
-        """'tutoring - math' from the classifier must reach the review UI."""
+        """'tutoring - math' from the classifier must reach the review UI.
+
+        The mocked transport replaces only the network hop — the REAL
+        post-LLM sanitization code runs.
+        """
         canned = app.ClassifierOutput(
             need_sets=[app.NeedSet(
                 count=1,
@@ -129,8 +114,8 @@ class TestFix10SkillsCanonicalization:
                 applicable_skills=["tutoring - math", "Tutoring - Math"],
             )],
             reasoning="canned",
-        )
-        _fake_classifier(app, monkeypatch, canned)
+        ).model_dump_json()
+        patch_llm(monkeypatch, app, [], [canned])
         out = app.classify_needs_node(make_state(user_prompt="math tutor"))
         assert out["extracted_skills"] == ["Tutoring - Math"]
         assert out["need_sets"][0]["applicable_skills"] == ["Tutoring - Math"]
@@ -448,3 +433,156 @@ class TestFix4DateGuard:
         import inspect
         src = inspect.getsource(app.render_skills_review_stage)
         assert "Notice window" in src
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S1: native Anthropic client, call helpers, stub recommender
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json
+
+
+def _canned_classifier_json(app) -> str:
+    return app.ClassifierOutput(
+        need_sets=[app.NeedSet(count=1, description="A helper")],
+        reasoning="canned",
+    ).model_dump_json()
+
+
+class TestS1RequestConstruction:
+    """PLAN §1a asserted on the wire — the SDK's real request serialization
+    is captured by a mocked httpx transport; nothing reaches the network."""
+
+    def test_classifier_body(self, app, monkeypatch):
+        captured = []
+        patch_llm(monkeypatch, app, captured, [_canned_classifier_json(app)])
+        result = app.call_classifier("some request context")
+        body = captured[0]
+        assert body["model"] == "claude-opus-4-8"
+        assert body["thinking"] == {"type": "adaptive"}
+        assert body["output_config"]["effort"] == "medium"
+        assert body["output_config"]["format"]["type"] == "json_schema"
+        # Temperature is rejected outright on Opus 4.8 — assert ABSENCE.
+        assert "temperature" not in body
+        assert "top_p" not in body and "top_k" not in body
+        assert body["system"] == app.CLASSIFIER_SYSTEM_PROMPT
+        assert body["messages"] == [
+            {"role": "user", "content": "some request context"}
+        ]
+        assert isinstance(result, app.ClassifierOutput)
+
+    def test_classifier_tolerates_thinking_blocks(self, app, monkeypatch):
+        """Adaptive thinking prepends thinking blocks; parsing must not
+        assume the text block is content[0]."""
+        payload = [
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "text", "text": _canned_classifier_json(app)},
+        ]
+        patch_llm(monkeypatch, app, [], [payload])
+        result = app.call_classifier("ctx")
+        assert result.need_sets[0].description == "A helper"
+
+    def test_scorer_body(self, app, monkeypatch):
+        captured = []
+        patch_llm(monkeypatch, app, captured, [json.dumps({"selection": 4})])
+        selection = app.call_likert_item("shared ctx", "profile text", "item text")
+        body = captured[0]
+        assert body["model"] == "claude-haiku-4-5"
+        assert body["temperature"] == 0.2
+        assert "thinking" not in body
+        schema = body["output_config"]["format"]["schema"]
+        assert schema["properties"]["selection"]["enum"] == [1, 2, 3, 4, 5]
+        assert schema["additionalProperties"] is False
+        assert body["system"] == "shared ctx"
+        assert selection == 4
+
+    def test_reasoning_body(self, app, monkeypatch):
+        captured = []
+        patch_llm(monkeypatch, app, captured, ["  A fine fit.  "])
+        text = app.call_reasoning("bundle text", "tier prompt")
+        body = captured[0]
+        assert body["model"] == "claude-sonnet-4-6"
+        assert body["temperature"] == 0.2
+        assert body["max_tokens"] == 200
+        assert "output_config" not in body
+        assert "thinking" not in body
+        assert body["system"] == "tier prompt"
+        assert text == "A fine fit."
+
+    def test_strict_schema_closes_every_object(self, app):
+        """The structured-outputs grammar requires additionalProperties:
+        false on ALL objects, including nested $defs."""
+        schema = app._strict_schema(app.ClassifierOutput)
+
+        violations = []
+
+        def _walk(node, path):
+            if isinstance(node, dict):
+                if node.get("type") == "object" or "properties" in node:
+                    if node.get("additionalProperties") is not False:
+                        violations.append(path)
+                for key, child in node.items():
+                    _walk(child, f"{path}.{key}")
+            elif isinstance(node, list):
+                for i, child in enumerate(node):
+                    _walk(child, f"{path}[{i}]")
+
+        _walk(schema, "$")
+        assert violations == []
+
+    def test_client_disables_sdk_retries(self, app):
+        """S3's single jittered retry must be the only retry layer."""
+        import inspect
+        src = inspect.getsource(app.get_anthropic_client)
+        assert "max_retries=0" in src
+
+
+class TestS1StubRecommender:
+    def test_matched_technical_almost_blocked(self, app):
+        state = make_state(
+            matched_volunteers=[{
+                "need_set_index": 0,
+                "need_set_description": "Helper",
+                "count_needed": 1,
+                "matched_volunteer_ids": ["V-0001", "V-0002"],
+                "margins": {},
+            }],
+            almost_matched=[{
+                "volunteer_id": "V-0003",
+                "preferred_name": "Blocked Bob",
+                "blocking_requirement": "Required Certifications",
+                "blocking_column": "certifications",
+            }],
+        )
+        out = app.recommend_node(state)
+        recs = {r["volunteer_id"]: r for r in out["recommendations"]}
+        assert recs["V-0001"]["tier"] == "Technical Match"
+        assert recs["V-0002"]["tier"] == "Technical Match"
+        assert recs["V-0003"]["tier"] == "Almost Match"
+        assert "Required Certifications" in recs["V-0003"]["reasoning"]
+        assert out["gap_notes"] is None
+
+    def test_duplicate_ids_across_groups_deduped(self, app):
+        state = make_state(
+            matched_volunteers=[
+                {"need_set_index": 0, "need_set_description": "A",
+                 "count_needed": 1, "matched_volunteer_ids": ["V-0001"],
+                 "margins": {}},
+                {"need_set_index": 1, "need_set_description": "B",
+                 "count_needed": 1, "matched_volunteer_ids": ["V-0001"],
+                 "margins": {}},
+            ],
+        )
+        out = app.recommend_node(state)
+        assert len(out["recommendations"]) == 1
+
+
+class TestS1MigrationComplete:
+    def test_no_langchain_or_old_recommender_remnants(self, app):
+        """PLAN Phase 2 exit grep, enforced early: the old single-call
+        recommender is deleted, not migrated."""
+        from pathlib import Path
+        src = Path(app.__file__).read_text(encoding="utf-8")
+        for pattern in ("RECOMMENDER_SYSTEM_PROMPT", "RecommenderOutput",
+                        "VolunteerRecommendation", "ChatOpenAI", "langchain"):
+            assert pattern not in src, f"stale reference: {pattern}"
