@@ -41,3 +41,55 @@ class TestHarnessSmoke:
         result = run_matching_defaults(app, make_need_set(), roster)
         assert result["matched"] == ["V-0001", "V-0002"]
         assert result["almost_matched"] == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — fix 2: OR-branch subsumption vacates the whole OR clause
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFix2OrBranchSubsumption:
+    def test_and_implied_branch_vacates_whole_or(self, app):
+        """AND=[Mon], OR=[[Mon],[Mon,Sat]] ≡ "Monday" — the executed proof.
+
+        The [Mon] branch is satisfied whenever AND holds, so the OR clause
+        adds nothing; the old code dropped only that branch and left
+        [Sat] mandatory, rejecting Monday-only volunteers.
+        """
+        result = app.normalize_flexible_requirement(
+            {"AND": ["Mon"], "OR": [["Mon"], ["Mon", "Sat"]]}, domain="days"
+        )
+        assert result == {"AND": ["Mon"], "OR": []}
+
+    def test_monday_only_volunteer_passes_subsumed_requirement(self, app):
+        """Matcher-level proof: Monday-only volunteer matches the ≡Monday req."""
+        roster = roster_frame(
+            make_volunteer("V-0001", "MondayOnly", availability_days="Mon"),
+        )
+        ns = make_need_set(
+            description="Monday session",
+            availability_days={"AND": ["Mon"], "OR": [["Mon"], ["Mon", "Sat"]]},
+        )
+        result = run_matching_defaults(app, ns, roster)
+        assert result["matched"] == ["V-0001"]
+
+    def test_garbage_only_branch_drops_without_vacating_sibling(self, app):
+        """[""], ["NA"] branches are noise; the real [Sat] branch survives."""
+        result = app.normalize_flexible_requirement(
+            {"AND": [], "OR": [[""], ["NA"], ["Sat"]]}, domain="days"
+        )
+        assert result == {"AND": [], "OR": [["Sat"]]}
+
+    def test_plain_cases_unchanged(self, app):
+        """No subsumption, no garbage — canonicalization only."""
+        result = app.normalize_flexible_requirement(
+            {"AND": ["monday"], "OR": [["saturday"], ["sunday", "tuesday"]]},
+            domain="days",
+        )
+        assert result == {"AND": ["Mon"], "OR": [["Sat"], ["Sun", "Tue"]]}
+
+    def test_partial_subsumption_still_trims_branch(self, app):
+        """A branch only PARTLY covered by AND keeps its remainder."""
+        result = app.normalize_flexible_requirement(
+            {"AND": ["Mon"], "OR": [["Mon", "Sat"], ["Sun"]]}, domain="days"
+        )
+        assert result == {"AND": ["Mon"], "OR": [["Sat"], ["Sun"]]}

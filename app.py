@@ -841,26 +841,36 @@ def normalize_flexible_requirement(requirement: dict, domain: Optional[str] = No
             and_set.add(cv)
             and_list.append(cv)
 
-    # Canonicalize OR branches, removing values already in AND
+    # Canonicalize OR branches.  Two distinct empty-branch cases (fix 2):
+    # a branch with no canonical values at all is garbage and is dropped
+    # alone, but a branch whose values are all covered by AND is satisfied
+    # whenever AND holds — the OR clause is then vacuous and EVERY branch
+    # must clear.  Dropping only the subsumed branch would leave its
+    # siblings mandatory and make the requirement strictly harder
+    # ("Monday (or Monday and Saturday)" must not become Mon AND Sat).
     or_branches = []
     seen_branches = set()
     for branch in requirement.get("OR", []) or []:
         branch_vals = branch if isinstance(branch, list) else [branch]
-        normalized_branch = []
+        canonical = []
         branch_seen = set()
         for v in branch_vals:
             cv = canonicalize_value(v, domain)
-            if not cv or cv in and_set or cv in branch_seen:
+            if not cv or cv in branch_seen:
                 continue
             branch_seen.add(cv)
-            normalized_branch.append(cv)
-        if not normalized_branch:
-            continue
-        branch_key = tuple(normalized_branch)
+            canonical.append(cv)
+        if not canonical:
+            continue                # garbage-only branch → drop the branch
+        remaining = [cv for cv in canonical if cv not in and_set]
+        if not remaining:
+            or_branches = []        # branch implied by AND → OR is vacuous
+            break
+        branch_key = tuple(remaining)
         if branch_key in seen_branches:
             continue
         seen_branches.add(branch_key)
-        or_branches.append(normalized_branch)
+        or_branches.append(remaining)
 
     return {"AND": and_list, "OR": or_branches}
 
