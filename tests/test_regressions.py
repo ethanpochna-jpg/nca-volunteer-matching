@@ -1093,6 +1093,172 @@ class TestS6BundleAndPrompts:
         assert 'if tier == "Almost Match"' in src
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — S7: SQLite request record, schema_version 2, seed script
+# ═══════════════════════════════════════════════════════════════════════════
+
+import sqlite3 as _sqlite3
+import uuid as _uuid
+
+import pandas as pd
+
+
+def _record_state(app, monkeypatch, tmp_path):
+    """Point the DB path at a temp file and build a fully-scored state."""
+    db_path = str(tmp_path / "requests.db")
+    monkeypatch.setattr(app, "REQUESTS_DB_PATH", db_path)
+    state = make_state(
+        need_sets=[make_need_set()],
+        matched_volunteers=[_match_group(0, ["V-0001"])],
+        margins={"V-0001": {"extra_skills": []}},
+        recommendations=[{
+            "volunteer_id": "V-0001", "tier": "Good Match", "reasoning": "",
+            "raw_selections": [5, 4, 3, 2],
+            "boxes": ["T2B", "T2B", "Neutral", "B2B"],
+            "total_score": 6, "caps_applied": [],
+        }],
+        gap_notes=None,
+    )
+    return db_path, state
+
+
+class TestS7RequestRecord:
+    def test_v2_round_trip_including_raw_selections(self, app, monkeypatch, tmp_path):
+        db_path, state = _record_state(app, monkeypatch, tmp_path)
+        out = app.write_request_record_node(state)
+
+        with _sqlite3.connect(db_path) as conn:
+            df = pd.read_sql("SELECT * FROM requests", conn)
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["schema_version"] == 2
+        assert row["user_prompt"] == state["user_prompt"]
+        recs = json.loads(row["recommendations_json"])
+        assert recs[0]["raw_selections"] == [5, 4, 3, 2]
+        assert recs[0]["boxes"] == ["T2B", "T2B", "Neutral", "B2B"]
+        assert recs[0]["total_score"] == 6
+        assert recs[0]["caps_applied"] == []
+        # The node's return value round-trips through sanitize_for_state
+        assert out["request_record"]["request_id"] == row["request_id"]
+
+    def test_request_id_is_full_uuid(self, app, monkeypatch, tmp_path):
+        _, state = _record_state(app, monkeypatch, tmp_path)
+        out = app.write_request_record_node(state)
+        rid = out["request_record"]["request_id"]
+        assert str(_uuid.UUID(rid)) == rid    # parses, canonical form
+        assert len(rid) == 36                 # full — not the old [:8]
+
+    def test_wal_mode_active(self, app, monkeypatch, tmp_path):
+        db_path, state = _record_state(app, monkeypatch, tmp_path)
+        app.write_request_record_node(state)
+        with _sqlite3.connect(db_path) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_concurrent_writes_all_land(self, app, monkeypatch, tmp_path):
+        """Requests and reasoning events written from parallel threads."""
+        from concurrent.futures import ThreadPoolExecutor
+        db_path, state = _record_state(app, monkeypatch, tmp_path)
+        app.init_request_db()
+
+        def write_request(_):
+            app.write_request_record_node(dict(state))
+
+        def write_event(i):
+            app.log_reasoning_event(
+                f"req-{i}", f"V-{i:04d}",
+                {"tier": "Good Match", "model": "claude-sonnet-4-6",
+                 "text": "fine", "dissent": False},
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(write_request, range(6)))
+            list(pool.map(write_event, range(6)))
+
+        with _sqlite3.connect(db_path) as conn:
+            n_req = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            n_evt = conn.execute(
+                "SELECT COUNT(*) FROM reasoning_events").fetchone()[0]
+        assert n_req == 6
+        assert n_evt == 6
+
+    def test_dissent_stored_as_0_or_1(self, app, monkeypatch, tmp_path):
+        db_path, _ = _record_state(app, monkeypatch, tmp_path)
+        app.init_request_db()
+        app.log_reasoning_event(
+            "req-1", "V-0001",
+            {"tier": "Perfect Match", "model": "claude-sonnet-4-6",
+             "text": "On second thought, merely good.", "dissent": True},
+        )
+        app.log_reasoning_event(
+            "req-1", "V-0002",
+            {"tier": "Good Match", "model": "claude-sonnet-4-6",
+             "text": "Solid fit.", "dissent": False},
+        )
+        with _sqlite3.connect(db_path) as conn:
+            values = [r[0] for r in conn.execute(
+                "SELECT dissent FROM reasoning_events ORDER BY id")]
+        assert values == [1, 0]
+
+    def test_reasoning_events_append_only_in_source(self, app):
+        """Tripwire for the append-only hard rule: INSERT is the only
+        statement ever issued against reasoning_events."""
+        from pathlib import Path
+        src = Path(app.__file__).read_text(encoding="utf-8")
+        assert "UPDATE reasoning_events" not in src
+        assert "DELETE FROM reasoning_events" not in src
+
+
+class TestS7Seed:
+    def _seeded_conn(self, app, monkeypatch, tmp_path):
+        db_path = str(tmp_path / "requests.db")
+        monkeypatch.setattr(app, "REQUESTS_DB_PATH", db_path)
+        app.init_request_db()
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "seed_requests_under_test",
+            Path(app.__file__).parent / "data" / "seed_requests.py",
+        )
+        seed_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(seed_mod)
+        conn = _sqlite3.connect(db_path)
+        return conn, seed_mod
+
+    def test_seed_populates_thirty_v2_rows_and_events(self, app, monkeypatch, tmp_path):
+        conn, seed = self._seeded_conn(app, monkeypatch, tmp_path)
+        inserted = seed.seed_database(conn)
+        conn.commit()
+        assert inserted == 30
+        versions = {r[0] for r in conn.execute(
+            "SELECT DISTINCT schema_version FROM requests")}
+        assert versions == {2}
+        n_events = conn.execute(
+            "SELECT COUNT(*) FROM reasoning_events").fetchone()[0]
+        assert n_events >= 4
+        n_dissent = conn.execute(
+            "SELECT COUNT(*) FROM reasoning_events WHERE dissent = 1"
+        ).fetchone()[0]
+        assert n_dissent >= 1
+        # Seeded recommendations parse and carry the v2 scoring fields
+        rec_json = conn.execute(
+            "SELECT recommendations_json FROM requests LIMIT 1").fetchone()[0]
+        recs = json.loads(rec_json)
+        assert "raw_selections" in recs[0] and "total_score" in recs[0]
+        conn.close()
+
+    def test_seed_idempotent(self, app, monkeypatch, tmp_path):
+        conn, seed = self._seeded_conn(app, monkeypatch, tmp_path)
+        first = seed.seed_database(conn)
+        conn.commit()
+        second = seed.seed_database(conn)
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+        assert (first, second) == (30, 0)
+        assert count == 30
+        conn.close()
+
+
 class TestS1MigrationComplete:
     def test_no_langchain_or_old_recommender_remnants(self, app):
         """PLAN Phase 2 exit grep, enforced early: the old single-call

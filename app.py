@@ -59,6 +59,7 @@ import json                     # Serialization for LLM outputs and request reco
 import os                       # File-existence checks for data files
 import random                   # Jitter for the scorer's single per-item retry
 import re                       # Multi-delimiter parsing for roster fields
+import sqlite3                  # Request-record persistence (stdlib — no ORM)
 import time                     # Backoff sleep for the scorer's single retry
 import uuid                     # Unique IDs for graph threads and request records
 from concurrent.futures import ThreadPoolExecutor  # 16-call scoring waves
@@ -154,9 +155,11 @@ def sanitize_for_state(value):
 
 # File paths — data files live under data/ at the repo root; the app and
 # the test suite both run from the repo root, so relative paths suffice.
+# requests.db is generated (gitignored), WAL-mode SQLite, seeded on first
+# run by data/seed_requests.py.
 ROSTER_PATH = "data/northbridge_volunteer_roster.csv"
 ASSIGNMENTS_PATH = "data/northbridge_volunteer_assignments.xlsx"
-REQUESTS_DATA_PATH = "northbridge_requests_data.csv"
+REQUESTS_DB_PATH = "requests.db"
 
 # ── Roster vocabulary ─────────────────────────────────────────────────────
 
@@ -1853,6 +1856,116 @@ def fetch_reasoning(bundle: str, tier: str, cache: dict, cache_key) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 7D — REQUEST-RECORD PERSISTENCE (S7)
+# ═══════════════════════════════════════════════════════════════════════════════
+# stdlib sqlite3, WAL mode, short-lived connections, writes in transactions.
+# The requests table is BORN at schema_version 2 (D3 — no CSV, no v1, no
+# migration; nothing existed before this).  Schema changes from here on
+# require bumping schema_version and a migration note in the commit body.
+# reasoning_events is APPEND-ONLY: INSERT is the only statement ever
+# issued against it — dissent rate is a queryable QA metric for the
+# future Insights Agent.
+
+SCHEMA_VERSION = 2
+
+_REQUESTS_COLUMNS = [
+    "request_id", "schema_version", "timestamp", "user_prompt",
+    "soft_preferences", "unchecked_skills", "request_source",
+    "need_sets_json", "confirmed_skills_json", "extracted_skills_json",
+    "form_certs_json", "form_languages_json", "has_specific_date",
+    "target_date", "notification_date", "is_recurring",
+    "matched_volunteers_json", "margins_json", "counterfactuals_json",
+    "almost_matched_json", "recommendations_json", "gap_notes",
+    "resulting_assignment_ids",
+]
+
+
+def db_connect(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """Short-lived WAL connection; every writer opens its own."""
+    conn = sqlite3.connect(db_path or REQUESTS_DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_request_db(db_path: Optional[str] = None) -> None:
+    """Create both tables if absent.  Idempotent."""
+    with db_connect(db_path) as conn:
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS requests (
+                request_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL DEFAULT {SCHEMA_VERSION},
+                timestamp TEXT NOT NULL,
+                user_prompt TEXT NOT NULL,
+                soft_preferences TEXT,
+                unchecked_skills TEXT,
+                request_source TEXT,
+                need_sets_json TEXT,
+                confirmed_skills_json TEXT,
+                extracted_skills_json TEXT,
+                form_certs_json TEXT,
+                form_languages_json TEXT,
+                has_specific_date INTEGER,
+                target_date TEXT,
+                notification_date TEXT,
+                is_recurring INTEGER,
+                matched_volunteers_json TEXT,
+                margins_json TEXT,
+                counterfactuals_json TEXT,
+                almost_matched_json TEXT,
+                recommendations_json TEXT,
+                gap_notes TEXT,
+                resulting_assignment_ids TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reasoning_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                volunteer_id TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                model TEXT NOT NULL,
+                text TEXT NOT NULL,
+                dissent INTEGER NOT NULL CHECK (dissent IN (0, 1)),
+                created_at TEXT NOT NULL
+            )
+        """)
+
+
+def insert_request_record(record: dict, db_path: Optional[str] = None) -> None:
+    """One request row, one transaction."""
+    placeholders = ", ".join(f":{col}" for col in _REQUESTS_COLUMNS)
+    with db_connect(db_path) as conn:
+        conn.execute(
+            f"INSERT INTO requests ({', '.join(_REQUESTS_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            record,
+        )
+
+
+def log_reasoning_event(request_id: str, volunteer_id: str, event: dict,
+                        db_path: Optional[str] = None) -> None:
+    """Append one reasoning event — one row per button fetch.
+
+    INSERT only; this table is never UPDATEd and never DELETEd from.
+    """
+    with db_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO reasoning_events "
+            "(request_id, volunteer_id, tier, model, text, dissent, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                request_id,
+                volunteer_id,
+                event["tier"],
+                event["model"],
+                event["text"],
+                1 if event.get("dissent") else 0,
+                datetime.now().isoformat(),
+            ),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 8 — LANGGRAPH NODE FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2102,9 +2215,16 @@ def match_volunteers_node(state: GraphState) -> dict:
 
 
 def write_request_record_node(state: GraphState) -> dict:
-    """Terminal node: persists the full request record to the requests CSV."""
+    """Terminal node: persists the full request record to SQLite (S7).
+
+    The record captures the full pipeline (I6) — extraction,
+    confirmations, matches, margins, counterfactuals, raw Likert
+    selections, boxes, totals, caps, tiers, and the deterministic gap
+    notes.  It is the future Insights Agent's input.
+    """
     record = {
-        "request_id": str(uuid.uuid4())[:8],
+        "request_id": str(uuid.uuid4()),
+        "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now().isoformat(),
         "user_prompt": state["user_prompt"],
         "soft_preferences": state.get("soft_preferences", ""),
@@ -2115,23 +2235,21 @@ def write_request_record_node(state: GraphState) -> dict:
         "extracted_skills_json": json_dumps_safe(state["extracted_skills"]),
         "form_certs_json": json_dumps_safe(state["form_certs"]),
         "form_languages_json": json_dumps_safe(state["form_languages"]),
-        "has_specific_date": state["has_specific_date"],
+        "has_specific_date": bool(state["has_specific_date"]),
         "target_date": state.get("target_date", ""),
         "notification_date": state["notification_date"],
-        "is_recurring": state.get("is_recurring", False),
+        "is_recurring": bool(state.get("is_recurring", False)),
         "matched_volunteers_json": json_dumps_safe(state["matched_volunteers"]),
         "margins_json": json_dumps_safe(state["margins"]),
         "counterfactuals_json": json_dumps_safe(state["counterfactuals"]),
         "almost_matched_json": json_dumps_safe(state["almost_matched"]),
         "recommendations_json": json_dumps_safe(state["recommendations"]),
+        "gap_notes": state.get("gap_notes") or "",
         "resulting_assignment_ids": "[]",
     }
 
-    record_df = pd.DataFrame([record])
-    if os.path.exists(REQUESTS_DATA_PATH):
-        record_df.to_csv(REQUESTS_DATA_PATH, mode="a", header=False, index=False)
-    else:
-        record_df.to_csv(REQUESTS_DATA_PATH, index=False)
+    init_request_db()
+    insert_request_record(record)
 
     return sanitize_for_state({"request_record": record})
 
@@ -2200,7 +2318,8 @@ def main():
         st.markdown("**Data Files**")
         st.caption(f"Roster: `{ROSTER_PATH}`")
         st.caption(f"Assignments: `{ASSIGNMENTS_PATH}`")
-        st.caption(f"Requests log: `{REQUESTS_DATA_PATH}`")
+        st.caption(f"Requests DB: `{REQUESTS_DB_PATH}`")
+        st.caption("Demo dataset — resets on redeploy.")
 
     # ── Session state initialization ───────────────────────────────────
     if "stage" not in st.session_state:
@@ -2220,6 +2339,15 @@ def main():
             f"Place it in the app directory."
         )
         st.stop()
+
+    # ── Seed the demo request history on first run (S7) ────────────────
+    # requests.db is generated and gitignored; a fresh deploy (or reboot
+    # of the ephemeral container) rebuilds it from the seed script.
+    if not os.path.exists(REQUESTS_DB_PATH):
+        from data.seed_requests import seed_database
+        init_request_db()
+        with db_connect() as conn:
+            seed_database(conn)
 
     # ── Stage dispatch ─────────────────────────────────────────────────
     if st.session_state["stage"] == "input":
@@ -2579,8 +2707,14 @@ def render_results_stage():
                             vol,
                             rec,
                         )
+                        fresh = cache_key not in cache
                         with st.spinner("Fetching reasoning..."):
-                            fetch_reasoning(bundle, tier, cache, cache_key)
+                            event = fetch_reasoning(bundle, tier, cache, cache_key)
+                        # S7: one reasoning_events row per button FETCH
+                        # (reruns replay from cache and log nothing).
+                        request_id = state.get("request_record", {}).get("request_id")
+                        if fresh and request_id:
+                            log_reasoning_event(request_id, vid, event)
                         st.rerun()
 
                 # ── Volunteer details in 3 columns ─────────────────
