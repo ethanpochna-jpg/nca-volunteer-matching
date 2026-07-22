@@ -1792,6 +1792,28 @@ class TestS13GraphLifecycle:
         assert rid_a != rid_b
 
 
+class TestS13Footer:
+    def test_footer_carries_all_sidebar_config_metadata(self, app):
+        """§13 (s13-6, D13-3): the ink footer replaces the sidebar and is
+        built from the live core constants — it can never drift from the
+        running configuration."""
+        footer = app.format_footer_html()
+        for needle in (
+            app.CLASSIFIER_MODEL, app.SCORER_MODEL, app.REASONING_MODEL,
+            app.ROSTER_PATH, app.ASSIGNMENTS_PATH, app.REQUESTS_DB_PATH,
+        ):
+            assert str(needle) in footer
+        assert "resets on redeploy" in footer
+        assert "Volunteer Matching" in footer
+        assert 'class="vm-footer"' in footer
+
+    def test_sidebar_is_gone_and_footer_rendered_in_main(self, app):
+        import inspect
+        src = inspect.getsource(app.main)
+        assert "st.sidebar" not in src
+        assert "format_footer_html()" in src
+
+
 class TestS13NavSource:
     """House-style source tripwires on the rewired handlers."""
 

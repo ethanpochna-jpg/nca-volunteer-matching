@@ -82,7 +82,7 @@ from core import graph, llm, matching, policy, reasoning, records, scoring
 _BRAND_CSS = """
 <style>
 /* ── globals ──────────────────────────────────────────────────────────── */
-div.block-container { padding-top: 2.2rem; max-width: 1240px; }
+div.block-container { padding-top: 2.2rem; padding-bottom: 0; max-width: 1240px; }
 .stApp              { font-weight: 450; }  /* DESIGN §2: 450 body is load-bearing */
 h1                  { letter-spacing: -0.025em; }
 
@@ -215,6 +215,40 @@ div[class*="st-key-reason_"] .stButton { display: flex; justify-content: flex-en
 div[class*="st-key-reason_"] button {
   background: transparent; border: 1px solid rgba(20,20,19,.2);
   border-radius: 999px; font-size: 13.5px; min-height: 0; padding: 4px 18px;
+}
+
+/* ── ink footer (DESIGN §4; replaces the sidebar per D13-3) ───────────── */
+.vm-footer { background: #141413; color: #F3F0EE;
+             border-radius: 34px 34px 0 0;
+             margin: 3.5rem calc(50% - 50vw) 0;   /* full-bleed pull */
+             padding: 56px 46px 40px; }
+.vm-footer-grid { max-width: 1200px; margin: 0 auto; display: grid;
+                  grid-template-columns: 1.5fr 1fr 1.1fr 1fr; gap: 34px; }
+.vm-footer h5   { font-weight: 700; font-size: 11px; letter-spacing: .12em;
+                  text-transform: uppercase; color: rgba(243,240,238,.5);
+                  margin: 0 0 12px; }
+.vm-footer p    { font-size: 13.5px; line-height: 1.55;
+                  color: rgba(243,240,238,.72); margin: 12px 0 0; }
+.vm-footer ul   { list-style: none; margin: 0; padding: 0; display: flex;
+                  flex-direction: column; gap: 8px; }
+.vm-footer li   { display: flex; gap: 10px; align-items: baseline;
+                  font-size: 13px; }
+.vm-footer li span { color: rgba(243,240,238,.55); min-width: 72px; }
+.vm-footer code { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+                  color: #F3F0EE; background: rgba(243,240,238,.08);
+                  padding: 1px 7px; border-radius: 6px; }
+.vm-footer-pill { display: inline-flex; border: 1px solid rgba(243,240,238,.3);
+                  border-radius: 999px; padding: 4px 13px; font-size: 12px;
+                  color: rgba(243,240,238,.85); }
+.vm-footer-bar  { max-width: 1200px; margin: 34px auto 0; padding-top: 20px;
+                  border-top: 1px solid rgba(243,240,238,.14); display: flex;
+                  justify-content: space-between; gap: 14px; font-size: 12.5px;
+                  color: rgba(243,240,238,.5); flex-wrap: wrap; }
+.vm-brand-ink   { color: #F3F0EE; }
+.vm-mark-ink    { border-color: #F3F0EE; }
+.vm-mark-ink i  { background: #F37338; }   /* footer satellite = light signal */
+@media (max-width: 1000px) {
+  .vm-footer-grid { grid-template-columns: 1fr 1fr; }
 }
 </style>
 """
@@ -513,6 +547,54 @@ def format_card_header(name, vid, pronouns, total_html: str, tier_tag_html: str)
     )
 
 
+def format_footer_html() -> str:
+    """§13 ink footer (DESIGN §4): replaces the sidebar (D13-3).
+
+    Four columns — brand blurb, models in use, data files, dataset —
+    built from the live core constants so the footer can never drift
+    from the running configuration.  Everything here is a code constant
+    (models, paths, static copy), so no escaping is needed; machine
+    values render mono per the type system.
+    """
+    return f"""
+<div class="vm-footer">
+  <div class="vm-footer-grid">
+    <div>
+      <div class="vm-brand vm-brand-ink"><span class="vm-mark vm-mark-ink"><i></i></span>Volunteer Matching</div>
+      <p>A two-agent coordination assistant. Human-in-the-loop extraction,
+      deterministic nine-check filtering, code-side tiering.</p>
+    </div>
+    <div>
+      <h5>Models in use</h5>
+      <ul>
+        <li><span>Classifier</span><code>{llm.CLASSIFIER_MODEL}</code></li>
+        <li><span>Scorer</span><code>{llm.SCORER_MODEL}</code></li>
+        <li><span>Reasoning</span><code>{llm.REASONING_MODEL}</code></li>
+      </ul>
+    </div>
+    <div>
+      <h5>Data files</h5>
+      <ul>
+        <li><code>{matching.ROSTER_PATH}</code></li>
+        <li><code>{matching.ASSIGNMENTS_PATH}</code></li>
+        <li><code>{records.REQUESTS_DB_PATH}</code></li>
+      </ul>
+    </div>
+    <div>
+      <h5>Dataset</h5>
+      <span class="vm-footer-pill">Demo — resets on redeploy</span>
+      <p>Synthetic data for a fictional organization. No real volunteer
+      information.</p>
+    </div>
+  </div>
+  <div class="vm-footer-bar">
+    <span>Volunteer Matching demo</span>
+    <span>LangGraph state-graph · all-Anthropic stack</span>
+  </div>
+</div>
+"""
+
+
 def start_new_request() -> None:
     """Full reset (HANDOFF §1 "New request"): clear, re-lock, new thread.
 
@@ -572,7 +654,7 @@ def render_step_nav() -> None:
 
 
 def main():
-    """Entry point: page config, sidebar, session state, stage dispatch."""
+    """Entry point: page config, session state, nav, stage dispatch, footer."""
 
     # §13: generic wordmark, no fictional-org branding (HANDOFF §2a note);
     # the brand-mark SVG replaces the emoji favicon.
@@ -582,21 +664,6 @@ def main():
         layout="wide",
     )
     inject_brand_css()
-
-    # ── Sidebar: read-only configuration (D-J: no model selector) ──────
-    with st.sidebar:
-        st.subheader("Configuration")
-        st.markdown("**Models in use**")
-        st.caption(f"Classifier: `{llm.CLASSIFIER_MODEL}`")
-        st.caption(f"Scorer: `{llm.SCORER_MODEL}`")
-        st.caption(f"Reasoning: `{llm.REASONING_MODEL}`")
-
-        st.divider()
-        st.markdown("**Data Files**")
-        st.caption(f"Roster: `{matching.ROSTER_PATH}`")
-        st.caption(f"Assignments: `{matching.ASSIGNMENTS_PATH}`")
-        st.caption(f"Requests DB: `{records.REQUESTS_DB_PATH}`")
-        st.badge("Demo dataset — resets on redeploy", color="gray")
 
     # ── Session state initialization ───────────────────────────────────
     if "stage" not in st.session_state:
@@ -643,6 +710,9 @@ def main():
     elif st.session_state["stage"] == "results":
         with st.container(key="stage-results"):
             render_results_stage()
+
+    # ── Ink footer (D13-3: the sidebar's config metadata lives here) ───
+    st.markdown(format_footer_html(), unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
