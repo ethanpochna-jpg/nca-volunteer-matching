@@ -1500,13 +1500,59 @@ class TestS13Theme:
 
 
 class TestS12Css:
-    def test_brand_css_covers_all_four_tier_card_slugs(self, app):
-        for slug in ("perfect", "good", "technical", "almost"):
-            assert f'st-key-card-{slug}-' in app._BRAND_CSS
+    def test_brand_css_drops_accent_bars_keeps_card_rules(self, app):
+        """§13 (s13-5): the left-border tier strip is the exact cliché the
+        redesign removes — card surfaces stay neutral; tier identity lives
+        in the ramp section header + outlined tag.  Almost cards recess a
+        half-step (#F5F2EF)."""
+        assert "border-left" not in app._BRAND_CSS
+        assert 'div[class*="st-key-card-"]' in app._BRAND_CSS
+        assert "st-key-card-almost-" in app._BRAND_CSS
+        assert "#F5F2EF" in app._BRAND_CSS
 
     def test_css_injected_once_in_main(self, app):
         import inspect
         assert "inject_brand_css()" in inspect.getsource(app.main)
+
+
+class TestS13CardMarkup:
+    def test_tier_header_covers_all_four_tiers_with_ramp(self, app):
+        """One hue, four steps (DESIGN §1) — rank numeral + accent per tier,
+        never a green/blue/amber/red traffic light."""
+        expected = {
+            "Perfect Match": ("01", "#8a3410"),
+            "Good Match": ("02", "#CF4500"),
+            "Technical Match": ("03", "#E4713C"),
+            "Almost Match": ("04", "#C99979"),
+        }
+        for tier, (rank, accent) in expected.items():
+            header = app.format_tier_header(tier, 3)
+            assert f'>{rank}<' in header
+            assert accent in header
+            assert tier in header and "(3)" in header
+
+    def test_tier_tag_uses_ramp_accent_and_short_name(self, app):
+        tag = app.format_tier_tag("Perfect Match")
+        assert 'class="vm-tier-tag"' in tag
+        assert "#8a3410" in tag and "Perfect" in tag and ">01<" in tag
+
+    def test_card_header_escapes_roster_strings(self, app):
+        """The one rule that keeps raw HTML on the results stage safe:
+        anything roster-derived is escaped before it enters markup."""
+        out = app.format_card_header("<x>&", "V-<1>", "s<he>", "", "")
+        assert "&lt;x&gt;&amp;" in out
+        assert "V-&lt;1&gt;" in out
+        assert "s&lt;he&gt;" in out
+        assert "<x>" not in out
+
+    def test_card_header_seats_total_and_tier_tag(self, app):
+        out = app.format_card_header("Ada", "V-1", "", "<TOTAL/>", "<TAG/>")
+        assert "<TOTAL/>" in out and "<TAG/>" in out
+        assert out.index("<TOTAL/>") < out.index("<TAG/>")
+
+    def test_card_header_omits_empty_pronouns(self, app):
+        assert "vm-card-pronouns" not in app.format_card_header("Ada", "V-1", "", "", "")
+        assert "vm-card-pronouns" in app.format_card_header("Ada", "V-1", "she/her", "", "")
 
 
 class TestS12Cards:

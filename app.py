@@ -56,6 +56,7 @@
 # helper, scoring stage, and persistence path lives in core/ — this file
 # renders the three Streamlit stages and calls through the modules.
 
+import html                     # Escaping roster-derived strings in card HTML
 import os                       # File-existence checks for data files
 import uuid                     # Unique IDs for graph threads
 from datetime import date, timedelta  # Form defaults and the date guard
@@ -158,12 +159,63 @@ div[class*="st-key-stage-"] { animation: omUp .5s cubic-bezier(.2,.7,.2,1) both;
 .vm-dissent i { width: 6px; height: 6px; background: #9A3A0A;
                 transform: rotate(45deg); display: inline-block; flex: 0 0 auto; }
 
-/* ── tier cards (§12 accent bars — replaced by s13-5 neutral surfaces) ── */
-div[class*="st-key-card-perfect-"]   { border-left: 4px solid #2E7D32; background: #F4FAF5; }
-div[class*="st-key-card-good-"]      { border-left: 4px solid #2563EB; background: #F3F7FE; }
-div[class*="st-key-card-technical-"] { border-left: 4px solid #B45309; background: #FDF9F1; }
-div[class*="st-key-card-almost-"]    { border-left: 4px solid #BE123C; background: #FDF3F5; }
-div[class*="st-key-card-"]           { padding: 1rem 1.25rem 1.1rem; }
+/* ── tier sections + stat tiles (DESIGN §1 ramp — numeral and tag ONLY) ─ */
+.vm-tier-head  { display: flex; align-items: baseline; gap: 18px;
+                 margin: 40px 0 22px; padding-bottom: 16px;
+                 border-bottom: 1px solid rgba(20,20,19,.12); }
+.vm-rank       { font-family: ui-monospace, Menlo, monospace; font-size: 56px;
+                 font-weight: 600; line-height: .8; letter-spacing: -.04em;
+                 color: var(--tier); }
+.vm-tier-name  { font-size: 26px; font-weight: 500; letter-spacing: -.02em;
+                 color: #141413; }
+.vm-tier-count { font-family: ui-monospace, Menlo, monospace; font-size: 15px;
+                 color: #a99f93; }
+.vm-tier-def   { font-size: 14px; color: #8a8279; max-width: 70ch;
+                 margin-top: 4px; }
+.vm-tier-tag   { display: inline-flex; align-items: center; gap: 6px;
+                 border: 1px solid var(--tier); color: var(--tier);
+                 border-radius: 999px; padding: 5px 13px; font-size: 12.5px;
+                 font-weight: 500; }
+.vm-tier-tag b { font-family: ui-monospace, Menlo, monospace; font-weight: 600;
+                 font-size: 11.5px; }
+.vm-stat-row   { display: flex; gap: 12px; flex-wrap: wrap; margin: 6px 0 10px; }
+.vm-stat       { display: flex; flex-direction: column; gap: 2px;
+                 background: #FCFBFA; border: 1px solid rgba(20,20,19,.1);
+                 border-radius: 16px; padding: 12px 16px; min-width: 96px; }
+.vm-stat b     { font-family: ui-monospace, Menlo, monospace; font-size: 20px;
+                 font-weight: 600; letter-spacing: -.02em; color: var(--tier); }
+.vm-stat span  { font-size: 11.5px; color: #8a8279; letter-spacing: .02em; }
+
+/* ── rec cards: neutral lifted surfaces, soft halo — no accent strips ─── */
+div[class*="st-key-card-"] {
+  background: #FCFBFA; border: 1px solid rgba(20,20,19,.11) !important;
+  border-radius: 20px; padding: 24px 26px;
+  box-shadow: rgba(0,0,0,.045) 0 14px 34px -18px;
+}
+div[class*="st-key-card-almost-"] { background: #F5F2EF; }  /* recess a half-step */
+.vm-card-head     { display: flex; align-items: flex-start;
+                    justify-content: space-between; gap: 16px; flex-wrap: wrap;
+                    margin-bottom: 6px; }
+.vm-card-who      { display: flex; align-items: baseline; gap: 10px;
+                    flex-wrap: wrap; }
+.vm-card-name     { font-size: 21px; font-weight: 600; letter-spacing: -.02em;
+                    color: #141413; }
+.vm-card-id       { font-family: ui-monospace, Menlo, monospace;
+                    font-size: 12.5px; color: #a99f93; }
+.vm-card-pronouns { font-size: 13.5px; color: #a99f93; }
+.vm-card-tags     { display: flex; align-items: center; gap: 9px;
+                    flex-wrap: wrap; }
+.vm-minilabel     { font-weight: 700; font-size: 10.5px; letter-spacing: .11em;
+                    text-transform: uppercase; color: #bdb4a8; margin: 0 0 8px; }
+.vm-blocked       { font-weight: 700; font-size: 11px; letter-spacing: .12em;
+                    text-transform: uppercase; color: #9A3A0A; margin: 10px 0 2px; }
+div[class*="st-key-well-"] { background: #F3F0EE; border-radius: 16px;
+                             padding: 18px 20px; margin-top: 6px; }
+div[class*="st-key-reason_"] .stButton { display: flex; justify-content: flex-end; }
+div[class*="st-key-reason_"] button {
+  background: transparent; border: 1px solid rgba(20,20,19,.2);
+  border-radius: 999px; font-size: 13.5px; min-height: 0; padding: 4px 18px;
+}
 </style>
 """
 
@@ -381,6 +433,84 @@ def format_dissent_badge(event: dict) -> str | None:
     if event.get("dissent"):
         return '<span class="vm-dissent"><i></i>Dissent — tier unchanged</span>'
     return None
+
+
+# §13 tier identity: rank + ramp accent + one-line definition (DESIGN §1 —
+# one hue, four steps; saturation = strength).  The ramp appears ONLY on
+# the rank numeral and the outlined tier tag; card surfaces stay neutral
+# (the left-strip accent cliché is gone).  Tier NAMES stay the fixed
+# vocabulary (I7); this dict is display metadata, never logic.
+_TIER_META = {
+    "Perfect Match": {
+        "rank": "01", "short": "Perfect", "accent": "#8a3410",
+        "definition": "Zero bottom-box scores and at most one neutral — "
+                      "clears every hard requirement with real margin.",
+    },
+    "Good Match": {
+        "rank": "02", "short": "Good", "accent": "#CF4500",
+        "definition": "Solid overall (sum 2–8). A dependable pick with one or "
+                      "two soft frictions — schedule, language, or role angle.",
+    },
+    "Technical Match": {
+        "rank": "03", "short": "Technical", "accent": "#E4713C",
+        "definition": "Passes every hard requirement (sum ≤ 0) but scores "
+                      "flat on fit — right on paper, weak in practice.",
+    },
+    "Almost Match": {
+        "rank": "04", "short": "Almost", "accent": "#C99979",
+        "definition": "Assigned by the matcher, never by score — a single "
+                      "hard requirement blocks an otherwise-close candidate.",
+    },
+}
+
+
+def format_tier_header(tier: str, count: int) -> str:
+    """§13 tier section header: 56px mono ramp numeral + name + count +
+    one-line definition over a hairline rule.  Everything here is a code
+    constant or an int — static by construction, no escaping needed.
+    """
+    meta = _TIER_META[tier]
+    return (
+        f'<div class="vm-tier-head" style="--tier:{meta["accent"]}">'
+        f'<span class="vm-rank">{meta["rank"]}</span>'
+        f'<div><span class="vm-tier-name">{tier}</span> '
+        f'<span class="vm-tier-count">({count})</span>'
+        f'<div class="vm-tier-def">{meta["definition"]}</div>'
+        "</div></div>"
+    )
+
+
+def format_tier_tag(tier: str) -> str:
+    """Outlined tier tag in the tier's ramp color: mono rank + short name."""
+    meta = _TIER_META[tier]
+    return (
+        f'<span class="vm-tier-tag" style="--tier:{meta["accent"]}">'
+        f'<b>{meta["rank"]}</b> {meta["short"]}</span>'
+    )
+
+
+def format_card_header(name, vid, pronouns, total_html: str, tier_tag_html: str) -> str:
+    """Card-header flex row: name / mono ID / pronouns · total pill + tier tag.
+
+    Every roster-derived string passes through html.escape — the rule that
+    keeps raw HTML on the results stage safe (long-form dynamic text never
+    enters HTML at all; it stays in native widgets).  total_html and
+    tier_tag_html are outputs of the sibling pure helpers.
+    """
+    left = [
+        f'<span class="vm-card-name">{html.escape(str(name))}</span>',
+        f'<span class="vm-card-id">{html.escape(str(vid))}</span>',
+    ]
+    if pronouns:
+        left.append(
+            f'<span class="vm-card-pronouns">{html.escape(str(pronouns))}</span>'
+        )
+    return (
+        '<div class="vm-card-head">'
+        f'<div class="vm-card-who">{"".join(left)}</div>'
+        f'<div class="vm-card-tags">{total_html}{tier_tag_html}</div>'
+        "</div>"
+    )
 
 
 def start_new_request() -> None:
@@ -864,6 +994,10 @@ def render_results_stage():
     roster = matching.load_roster()
     recommendations = state.get("recommendations", [])
 
+    st.markdown(
+        format_eyebrow("Recommendations · Step 03", stage=True),
+        unsafe_allow_html=True,
+    )
     st.title(format_results_headline(len(recommendations)))
     st.markdown(
         "Filtered by nine deterministic checks, scored on four Likert items, "
@@ -892,12 +1026,22 @@ def render_results_stage():
         "Almost Match": {"slug": "almost"},
     }
 
+    # Tier-count stat tiles (mockup: the at-a-glance summary strip).
+    if recommendations:
+        tiles = "".join(
+            f'<div class="vm-stat" style="--tier:{_TIER_META[t]["accent"]}">'
+            f"<b>{sum(1 for r in recommendations if r['tier'] == t)}</b>"
+            f'<span>{_TIER_META[t]["short"]}</span></div>'
+            for t in tier_order
+        )
+        st.markdown(f'<div class="vm-stat-row">{tiles}</div>', unsafe_allow_html=True)
+
     for tier in tier_order:
         tier_recs = [r for r in recommendations if r["tier"] == tier]
         if not tier_recs:
             continue
 
-        st.markdown(f"### {tier} ({len(tier_recs)})")
+        st.markdown(format_tier_header(tier, len(tier_recs)), unsafe_allow_html=True)
 
         for rec in tier_recs:
             vid = rec["volunteer_id"]
@@ -912,25 +1056,39 @@ def render_results_stage():
             # accent bar from _BRAND_CSS (the old raw-<div> strip never
             # wrapped Streamlit children and is gone).
             with st.container(border=True, key=f"card-{TIER_STYLE[tier]['slug']}-{vid}"):
-                # Header: name, ID, pronouns (with NaN guard)
+                # Header row: name / mono ID / pronouns (NaN-guarded) with
+                # the total pill + outlined tier tag seated right (mockup).
                 pronouns = vol.get("pronouns", "")
-                pronouns_str = f" · {pronouns}" if pronouns and str(pronouns) not in ("nan", "", "NaN") else ""
-                st.markdown(f"**{vol['preferred_name']}** ({vid}){pronouns_str}")
+                pronouns_ok = bool(pronouns) and str(pronouns) not in ("nan", "", "NaN")
+                st.markdown(
+                    format_card_header(
+                        vol["preferred_name"],
+                        vid,
+                        pronouns if pronouns_ok else "",
+                        format_total_pill(rec),
+                        format_tier_tag(tier),
+                    ),
+                    unsafe_allow_html=True,
+                )
 
                 # §13: per-item dot-pill chips (raw distribution, stored in
-                # the record — displayed, never re-tiered here).  The total
-                # pill rides the row until s13-5 seats it in the header.
+                # the record — displayed, never re-tiered here).
                 chips = format_score_chips(rec)
-                total = format_total_pill(rec)
-                if chips or total:
+                if chips:
                     st.markdown(
-                        f'<div class="vm-chip-row">{chips}{total}</div>',
+                        f'<div class="vm-chip-row">{chips}</div>',
                         unsafe_allow_html=True,
                     )
 
                 # ── Reasoning (S6) ─────────────────────────────────
                 if tier == "Almost Match":
-                    # D-H: templated blocker text inline, no button.
+                    # D-H: templated blocker text inline, no button — under
+                    # the clay BLOCKED BY label; the dynamic text stays in a
+                    # native widget (never enters HTML).
+                    st.markdown(
+                        '<div class="vm-blocked">Blocked by</div>',
+                        unsafe_allow_html=True,
+                    )
                     st.caption(rec["reasoning"])
                 else:
                     cache = st.session_state.setdefault("reasoning_cache", {})
@@ -939,10 +1097,16 @@ def render_results_stage():
                     if cached:
                         # I5/D-G: text shown verbatim; dissent is logged,
                         # never applied — the tier above stays as scored.
-                        dissent_badge = format_dissent_badge(cached)
-                        if dissent_badge:
-                            st.markdown(dissent_badge, unsafe_allow_html=True)
-                        st.caption(cached["text"])
+                        # §13: rendered in the inset reasoning well.
+                        with st.container(key=f"well-{vid}"):
+                            st.markdown(
+                                '<div class="vm-minilabel">Reasoning · Claude Sonnet</div>',
+                                unsafe_allow_html=True,
+                            )
+                            dissent_badge = format_dissent_badge(cached)
+                            if dissent_badge:
+                                st.markdown(dissent_badge, unsafe_allow_html=True)
+                            st.caption(cached["text"])
                     elif rec.get("reasoning"):
                         st.caption(rec["reasoning"])  # scoring-unavailable note
 
@@ -968,7 +1132,8 @@ def render_results_stage():
                 c1, c2, c3 = st.columns(3)
 
                 with c1:
-                    st.markdown("**Availability**")
+                    st.markdown('<div class="vm-minilabel">Availability</div>',
+                                unsafe_allow_html=True)
                     # §12: one markdown block per column (soft line breaks)
                     # instead of stacked st.text — kills inter-line gaps.
                     c1_lines = [
@@ -981,7 +1146,8 @@ def render_results_stage():
                     st.markdown("  \n".join(c1_lines))
 
                 with c2:
-                    st.markdown("**Profile**")
+                    st.markdown('<div class="vm-minilabel">Profile</div>',
+                                unsafe_allow_html=True)
                     transport = vol.get("transportation", "N/A")
                     c2_lines = [
                         f"Area: {vol['home_area']}",
@@ -999,7 +1165,8 @@ def render_results_stage():
                 with c3:
                     # ── Capacity Margins ────────────────────────────
                     if tier != "Almost Match" and margin:
-                        st.markdown("**Capacity Margins**")
+                        st.markdown('<div class="vm-minilabel">Capacity margins</div>',
+                                    unsafe_allow_html=True)
 
                         hrs_rem = margin.get("hours_remaining_after_request")
                         max_hrs = margin.get("max_hours_per_week", "?")
@@ -1028,7 +1195,8 @@ def render_results_stage():
                         st.markdown("  \n".join(m_lines))
 
                     # ── Assignment History ──────────────────────────
-                    st.markdown("**History**")
+                    st.markdown('<div class="vm-minilabel">History</div>',
+                                unsafe_allow_html=True)
                     total_asgn = history.get("total_assignments", 0)
                     no_shows = history.get("no_shows", 0)
                     no_show_rate = history.get("no_show_rate", 0)
