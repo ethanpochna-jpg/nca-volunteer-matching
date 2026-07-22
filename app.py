@@ -158,7 +158,7 @@ def main():
 
     # ── Sidebar: read-only configuration (D-J: no model selector) ──────
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.subheader("Configuration")
         st.markdown("**Models in use**")
         st.caption(f"Classifier: `{llm.CLASSIFIER_MODEL}`")
         st.caption(f"Scorer: `{llm.SCORER_MODEL}`")
@@ -169,7 +169,7 @@ def main():
         st.caption(f"Roster: `{matching.ROSTER_PATH}`")
         st.caption(f"Assignments: `{matching.ASSIGNMENTS_PATH}`")
         st.caption(f"Requests DB: `{records.REQUESTS_DB_PATH}`")
-        st.caption("Demo dataset — resets on redeploy.")
+        st.badge("Demo dataset — resets on redeploy", color="gray")
 
     # ── Session state initialization ───────────────────────────────────
     if "stage" not in st.session_state:
@@ -215,7 +215,7 @@ def main():
 def render_input_stage():
     """Render the initial request input form."""
 
-    st.subheader("📋 Describe Your Volunteer Need")
+    st.subheader("📋 Describe Your Volunteer Need", divider="gray")
 
     user_prompt = st.text_area(
         "What do you need?",
@@ -230,57 +230,61 @@ def render_input_stage():
              "'preferably' for nice-to-haves.",
     )
 
-    st.subheader("📌 Hard Requirements")
+    st.subheader("📌 Hard Requirements", divider="gray")
     st.caption(
         "These override and supplement the natural language extraction. "
         "Anything selected here is treated as a non-negotiable filter."
     )
 
-    col1, col2 = st.columns(2)
+    # §12: bordered group — pure layout, widgets and params unchanged.
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
 
-    with col1:
-        form_certs = st.multiselect(
-            "Required Certifications",
-            options=policy.VALID_CERTS_CLEARABLE,
-            help="Only volunteers with ALL selected certifications will match. "
-                 "Policy-mandated certs (e.g., Background Check for tutoring) "
-                 "are added automatically based on skills.",
-        )
-
-    with col2:
-        form_languages = st.multiselect(
-            "Required Languages",
-            options=policy.VALID_LANGUAGES,
-            help="Only volunteers who speak ALL selected languages will match.",
-        )
-
-    st.subheader("📅 Scheduling")
-    col_date, col_notify = st.columns(2)
-
-    with col_date:
-        has_specific_date = st.checkbox("I have a specific target date")
-        target_date = None
-        if has_specific_date:
-            target_date = st.date_input(
-                "Target Date",
-                value=date.today() + timedelta(days=7),
-                min_value=date.today(),
+        with col1:
+            form_certs = st.multiselect(
+                "Required Certifications",
+                options=policy.VALID_CERTS_CLEARABLE,
+                help="Only volunteers with ALL selected certifications will match. "
+                     "Policy-mandated certs (e.g., Background Check for tutoring) "
+                     "are added automatically based on skills.",
             )
 
-    with col_notify:
-        notification_date = st.date_input(
-            "Notification Date (when volunteers will be contacted)",
-            value=date.today(),
-        )
+        with col2:
+            form_languages = st.multiselect(
+                "Required Languages",
+                options=policy.VALID_LANGUAGES,
+                help="Only volunteers who speak ALL selected languages will match.",
+            )
 
-    # ── Recurring toggle ───────────────────────────────────────────────
-    is_recurring = st.checkbox("This is a recurring need")
-    recurring_end_date = None
-    if is_recurring:
-        recurring_end_date = st.date_input(
-            "Recurring until",
-            value=date.today() + timedelta(days=90),
-        )
+    st.subheader("📅 Scheduling", divider="gray")
+    # §12: bordered group — pure layout, widgets and params unchanged.
+    with st.container(border=True):
+        col_date, col_notify = st.columns(2)
+
+        with col_date:
+            has_specific_date = st.checkbox("I have a specific target date")
+            target_date = None
+            if has_specific_date:
+                target_date = st.date_input(
+                    "Target Date",
+                    value=date.today() + timedelta(days=7),
+                    min_value=date.today(),
+                )
+
+        with col_notify:
+            notification_date = st.date_input(
+                "Notification Date (when volunteers will be contacted)",
+                value=date.today(),
+            )
+
+        # ── Recurring toggle ───────────────────────────────────────────
+        is_recurring = st.checkbox("This is a recurring need")
+        recurring_end_date = None
+        if is_recurring:
+            recurring_end_date = st.date_input(
+                "Recurring until",
+                value=date.today() + timedelta(days=90),
+            )
 
     # ── Submit ─────────────────────────────────────────────────────────
     if st.button("🔍 Analyze Request", type="primary", use_container_width=True):
@@ -347,10 +351,10 @@ def render_skills_review_stage():
 
     state = st.session_state["classifier_state"]
 
-    st.subheader("🔍 Review Extracted Requirements")
+    st.subheader("🔍 Review Extracted Requirements", divider="gray")
 
     # Show classifier reasoning
-    with st.expander("🧠 Classifier Reasoning", expanded=True):
+    with st.expander("Classifier Reasoning", expanded=True, icon=":material/psychology:"):
         st.write(state["classifier_reasoning"])
 
     # Show soft preferences if any were extracted
@@ -371,7 +375,7 @@ def render_skills_review_stage():
             pass
 
     # Show need sets
-    with st.expander("📦 Need Sets", expanded=True):
+    with st.expander("Need Sets", expanded=True, icon=":material/inventory_2:"):
         for i, ns in enumerate(state["need_sets"]):
             st.markdown(f"**Need Set {i + 1}:** {ns['description']} (count: {ns['count']})")
             details = []
@@ -394,7 +398,7 @@ def render_skills_review_stage():
                 st.caption(f"  {d}")
 
     # ── Skills confirmation ────────────────────────────────────────────
-    st.subheader("✅ Confirm Required Skills")
+    st.subheader("✅ Confirm Required Skills", divider="gray")
     st.caption(
         "Check skills that are **absolute requirements** — volunteers without "
         "them will be filtered out.  Unchecked skills will be treated as "
@@ -407,11 +411,13 @@ def render_skills_review_stage():
         confirmed = []
     else:
         confirmed = []
-        cols = st.columns(min(len(extracted), 3))
-        for i, skill in enumerate(extracted):
-            with cols[i % len(cols)]:
-                if st.checkbox(skill, value=False, key=f"skill_{skill}"):
-                    confirmed.append(skill)
+        # §12: bordered group — pure layout, checkbox keys unchanged.
+        with st.container(border=True):
+            cols = st.columns(min(len(extracted), 3))
+            for i, skill in enumerate(extracted):
+                with cols[i % len(cols)]:
+                    if st.checkbox(skill, value=False, key=f"skill_{skill}"):
+                        confirmed.append(skill)
 
     # Compute unchecked skills for soft-preference forwarding
     unchecked = [s for s in extracted if s not in confirmed]
