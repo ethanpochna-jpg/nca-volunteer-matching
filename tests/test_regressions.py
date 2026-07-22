@@ -1444,6 +1444,38 @@ class TestS2LikertConstants:
 # the old look is rewritten here in the same commit as the change it guards.
 # ═══════════════════════════════════════════════════════════════════════════
 
+class TestS13Copy:
+    def test_no_emoji_in_app_source(self, app):
+        """§13 (s13-2): the design bans emoji everywhere in the UI (DESIGN
+        §7 don'ts).  Arrows (U+2190–21FF) and geometric glyphs (U+25A0–
+        25FF) are typography, not emoji, and deliberately stay legal."""
+        import re
+        from pathlib import Path
+        src = Path(app.__file__).read_text(encoding="utf-8")
+        match = re.search(
+            r"[\U0001F000-\U0001FAFF☀-➿⬀-⯿️]", src
+        )
+        assert match is None, f"emoji found in app.py: {match.group(0)!r}"
+
+    def test_results_headline_counts(self, app):
+        """Mockup's 'Eight volunteers, ranked.' is sample-data-specific;
+        production computes the count (spelled 1–12, numeral past twelve,
+        singular at one, dedicated zero case)."""
+        assert app.format_results_headline(8) == "Eight volunteers, ranked."
+        assert app.format_results_headline(1) == "One volunteer, ranked."
+        assert app.format_results_headline(13) == "13 volunteers, ranked."
+        assert app.format_results_headline(0) == "No volunteers matched."
+
+    def test_eyebrow_markup(self, app):
+        """Eyebrow = dot + label div; stage variant widens tracking via a
+        modifier class, never a second markup shape."""
+        html = app.format_eyebrow("Hard requirements")
+        assert html.startswith('<div class="vm-eyebrow"><i></i>')
+        assert "Hard requirements" in html
+        staged = app.format_eyebrow("Request · Step 01", stage=True)
+        assert 'class="vm-eyebrow vm-eyebrow-stage"' in staged
+
+
 class TestS13Theme:
     def test_config_toml_exists_and_pins_the_brand_theme(self, app):
         """§13 (s13-1): pinned light + warm cream/ink editorial palette — the

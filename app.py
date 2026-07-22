@@ -73,19 +73,32 @@ from core import graph, llm, matching, policy, reasoning, records, scoring
 # SECTION 10 — STREAMLIT USER INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# §12 aesthetics: the ONLY raw-CSS surface in the app. Everything themable
-# stays in .streamlit/config.toml; these six rules exist solely because
-# per-element styling (tier accent bars on keyed containers, container
-# padding, page gutter) has no [theme] key. Selectors hang off Streamlit's
+# §12/§13 aesthetics: the ONLY raw-CSS surface in the app. Everything
+# themable stays in .streamlit/config.toml; these rules exist solely
+# because per-element styling (keyed containers, eyebrow atoms, body
+# weight, page gutter) has no [theme] key. Selectors hang off Streamlit's
 # documented stable `st-key-<key>` classes from st.container(key=...).
 _BRAND_CSS = """
 <style>
+/* ── globals ──────────────────────────────────────────────────────────── */
+div.block-container { padding-top: 2.2rem; max-width: 1240px; }
+.stApp              { font-weight: 450; }  /* DESIGN §2: 450 body is load-bearing */
+h1                  { letter-spacing: -0.025em; }
+
+/* ── eyebrows (DESIGN §4: 6px signal dot + uppercase label) ───────────── */
+.vm-eyebrow   { display: flex; align-items: center; gap: 9px; margin: 0 0 10px;
+                font-weight: 700; font-size: 12px; letter-spacing: 0.13em;
+                text-transform: uppercase; color: #7c756c; }
+.vm-eyebrow i { width: 6px; height: 6px; border-radius: 50%;
+                background: #CF4500; display: inline-block; flex: 0 0 auto; }
+.vm-eyebrow-stage { letter-spacing: 0.15em; }
+
+/* ── tier cards (§12 accent bars — replaced by s13-5 neutral surfaces) ── */
 div[class*="st-key-card-perfect-"]   { border-left: 4px solid #2E7D32; background: #F4FAF5; }
 div[class*="st-key-card-good-"]      { border-left: 4px solid #2563EB; background: #F3F7FE; }
 div[class*="st-key-card-technical-"] { border-left: 4px solid #B45309; background: #FDF9F1; }
 div[class*="st-key-card-almost-"]    { border-left: 4px solid #BE123C; background: #FDF3F5; }
 div[class*="st-key-card-"]           { padding: 1rem 1.25rem 1.1rem; }
-div.block-container                  { padding-top: 2.2rem; }
 </style>
 """
 
@@ -93,6 +106,36 @@ div.block-container                  { padding-top: 2.2rem; }
 def inject_brand_css() -> None:
     """Inject the §12 brand CSS once per rerun, right after page config."""
     st.markdown(_BRAND_CSS, unsafe_allow_html=True)
+
+
+def format_eyebrow(label: str, stage: bool = False) -> str:
+    """§13 eyebrow: 6px signal-orange dot + uppercase 12/700 label.
+
+    Pure so the markup contract is unit-testable.  Labels are static app
+    copy, never user or model output — no escaping by design; anything
+    dynamic must go through an escaping helper instead (s13-5 rule).
+    Stage-level eyebrows track wider (.15em) than in-page ones (.13em).
+    """
+    cls = "vm-eyebrow vm-eyebrow-stage" if stage else "vm-eyebrow"
+    return f'<div class="{cls}"><i></i>{label}</div>'
+
+
+# Spelled-out counts for the stage-3 headline (mockup: "Eight volunteers,
+# ranked." — production computes the count; numerals past twelve read
+# better than "Thirteen volunteers" in a 46px display line).
+_NUM_WORDS = {
+    1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six",
+    7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten", 11: "Eleven", 12: "Twelve",
+}
+
+
+def format_results_headline(n: int) -> str:
+    """Stage-3 display headline with a dynamic recommendation count."""
+    if n == 0:
+        return "No volunteers matched."
+    if n == 1:
+        return "One volunteer, ranked."
+    return f"{_NUM_WORDS.get(n, str(n))} volunteers, ranked."
 
 
 # §12 score chips: raw 1–5 selections rendered as theme-palette badges.
@@ -136,25 +179,21 @@ def format_dissent_badge(event: dict) -> str | None:
     badge only surfaces that the logged event carried dissent=1.
     """
     if event.get("dissent"):
-        return ":violet-badge[⚑ Dissent — reasoning disagrees; tier unchanged]"
+        return ":violet-badge[Dissent — reasoning disagrees; tier unchanged]"
     return None
 
 
 def main():
     """Entry point: page config, sidebar, session state, stage dispatch."""
 
+    # §13: generic wordmark, no fictional-org branding (HANDOFF §2a note);
+    # the brand-mark SVG replaces the emoji favicon.
     st.set_page_config(
-        page_title="NCA Volunteer Matching Assistant",
-        page_icon="🤝",
+        page_title="Volunteer Matching",
+        page_icon="static/brand-mark.svg",
         layout="wide",
     )
     inject_brand_css()
-
-    st.title("🤝 Northbridge Volunteer Matching Assistant")
-    st.caption(
-        "AI-powered volunteer coordination for program managers. "
-        "Describe what you need — the system identifies, filters, and recommends volunteers."
-    )
 
     # ── Sidebar: read-only configuration (D-J: no model selector) ──────
     with st.sidebar:
@@ -215,7 +254,13 @@ def main():
 def render_input_stage():
     """Render the initial request input form."""
 
-    st.subheader("📋 Describe Your Volunteer Need", divider="gray")
+    st.markdown(format_eyebrow("Request · Step 01", stage=True), unsafe_allow_html=True)
+    st.title("Describe the volunteer need.")
+    st.markdown(
+        "In plain language — role, timing, skills, and any hard rules. "
+        "Use *must* for non-negotiables and *preferably* for nice-to-haves. "
+        "Claude extracts a structured need set; you confirm it on the next step."
+    )
 
     user_prompt = st.text_area(
         "What do you need?",
@@ -230,7 +275,7 @@ def render_input_stage():
              "'preferably' for nice-to-haves.",
     )
 
-    st.subheader("📌 Hard Requirements", divider="gray")
+    st.markdown(format_eyebrow("Hard requirements"), unsafe_allow_html=True)
     st.caption(
         "These override and supplement the natural language extraction. "
         "Anything selected here is treated as a non-negotiable filter."
@@ -256,7 +301,7 @@ def render_input_stage():
                 help="Only volunteers who speak ALL selected languages will match.",
             )
 
-    st.subheader("📅 Scheduling", divider="gray")
+    st.markdown(format_eyebrow("Scheduling"), unsafe_allow_html=True)
     # §12: bordered group — pure layout, widgets and params unchanged.
     with st.container(border=True):
         col_date, col_notify = st.columns(2)
@@ -287,7 +332,7 @@ def render_input_stage():
             )
 
     # ── Submit ─────────────────────────────────────────────────────────
-    if st.button("🔍 Analyze Request", type="primary", use_container_width=True):
+    if st.button("Analyze request →", type="primary", use_container_width=True):
         if not user_prompt.strip():
             st.warning("Please describe your volunteer need before submitting.")
             return
@@ -323,7 +368,7 @@ def render_input_stage():
         config = {"configurable": {"thread_id": st.session_state["thread_id"]}}
         st.session_state["graph_config"] = config
 
-        with st.spinner("🧠 Analyzing your request..."):
+        with st.spinner("Analyzing your request..."):
             try:
                 st.session_state["graph"].invoke(initial_state, config)
             except Exception as e:
@@ -351,10 +396,16 @@ def render_skills_review_stage():
 
     state = st.session_state["classifier_state"]
 
-    st.subheader("🔍 Review Extracted Requirements", divider="gray")
+    st.markdown(format_eyebrow("Review · Step 02", stage=True), unsafe_allow_html=True)
+    st.title("Review the extraction.")
+    st.markdown(
+        "Confirm what Claude Opus pulled from your request before the roster "
+        "is filtered. Checked skills become hard filters; unchecked ones ride "
+        "along as preferences for the recommender."
+    )
 
     # Show classifier reasoning
-    with st.expander("Classifier Reasoning", expanded=True, icon=":material/psychology:"):
+    with st.expander("Classifier reasoning", expanded=True, icon=":material/psychology:"):
         st.write(state["classifier_reasoning"])
 
     # Show soft preferences if any were extracted
@@ -368,14 +419,14 @@ def render_skills_review_stage():
             _target = date.fromisoformat(str(state["target_date"]))
             _notify = date.fromisoformat(str(state["notification_date"]))
             st.caption(
-                f"🗓️ Notice window: {(_target - _notify).days} day(s) "
+                f"Notice window: {(_target - _notify).days} day(s) "
                 f"between notification and target date."
             )
         except (ValueError, TypeError):
             pass
 
     # Show need sets
-    with st.expander("Need Sets", expanded=True, icon=":material/inventory_2:"):
+    with st.expander("Need sets", expanded=True, icon=":material/inventory_2:"):
         for i, ns in enumerate(state["need_sets"]):
             st.markdown(f"**Need Set {i + 1}:** {ns['description']} (count: {ns['count']})")
             details = []
@@ -398,7 +449,7 @@ def render_skills_review_stage():
                 st.caption(f"  {d}")
 
     # ── Skills confirmation ────────────────────────────────────────────
-    st.subheader("✅ Confirm Required Skills", divider="gray")
+    st.markdown(format_eyebrow("Confirm required skills"), unsafe_allow_html=True)
     st.caption(
         "Check skills that are **absolute requirements** — volunteers without "
         "them will be filtered out.  Unchecked skills will be treated as "
@@ -428,7 +479,7 @@ def render_skills_review_stage():
     auto_certs = policy.infer_mandatory_certs(sorted(set(extracted) | set(confirmed)))
     if auto_certs:
         st.caption(
-            f"🔒 Auto-added certifications based on the type of work "
+            f"Policy-required, auto-added — based on the type of work "
             f"identified: {', '.join(auto_certs)}"
         )
 
@@ -436,14 +487,14 @@ def render_skills_review_stage():
     col_back, col_confirm = st.columns(2)
 
     with col_back:
-        if st.button("← Back to Input", use_container_width=True):
+        if st.button("← Back", use_container_width=True):
             st.session_state["stage"] = "input"
             st.session_state["thread_id"] = str(uuid.uuid4())
             st.session_state["graph"] = graph.build_graph()
             st.rerun()
 
     with col_confirm:
-        if st.button("✅ Confirm & Match", type="primary", use_container_width=True):
+        if st.button("Confirm & match →", type="primary", use_container_width=True):
             config = st.session_state["graph_config"]
 
             # Update graph state with confirmed skills AND unchecked (soft)
@@ -455,7 +506,7 @@ def render_skills_review_stage():
                 },
             )
 
-            with st.spinner("🔄 Matching volunteers and generating recommendations..."):
+            with st.spinner("Matching volunteers and generating recommendations..."):
                 try:
                     final_state = st.session_state["graph"].invoke(None, config)
                 except Exception as e:
@@ -481,8 +532,13 @@ def render_results_stage():
 
     state = st.session_state["final_state"]
     roster = matching.load_roster()
+    recommendations = state.get("recommendations", [])
 
-    st.subheader("📊 Volunteer Recommendations")
+    st.title(format_results_headline(len(recommendations)))
+    st.markdown(
+        "Filtered by nine deterministic checks, scored on four Likert items, "
+        "then tiered in code. Tiers are fixed thresholds — never a model's guess."
+    )
 
     # First need set that matched each volunteer — context for reasoning
     # bundles (consistent with first-wins margins).
@@ -496,16 +552,14 @@ def render_results_stage():
         st.warning(f"**Gap report:** {state['gap_notes']}")
 
     # ── Tiered recommendations ─────────────────────────────────────────
-    recommendations = state.get("recommendations", [])
-
     tier_order = ["Perfect Match", "Good Match", "Technical Match", "Almost Match"]
-    # §12: slug feeds the keyed-container CSS accent (st-key-card-<slug>-*);
+    # §12/§13: slug feeds the keyed-container CSS (st-key-card-<slug>-*);
     # accent hexes live only in _BRAND_CSS so color stays a styling concern.
     TIER_STYLE = {
-        "Perfect Match": {"slug": "perfect", "icon": "🌟", "badge": "green"},
-        "Good Match": {"slug": "good", "icon": "👍", "badge": "blue"},
-        "Technical Match": {"slug": "technical", "icon": "⚙️", "badge": "orange"},
-        "Almost Match": {"slug": "almost", "icon": "⚠️", "badge": "red"},
+        "Perfect Match": {"slug": "perfect"},
+        "Good Match": {"slug": "good"},
+        "Technical Match": {"slug": "technical"},
+        "Almost Match": {"slug": "almost"},
     }
 
     for tier in tier_order:
@@ -513,7 +567,7 @@ def render_results_stage():
         if not tier_recs:
             continue
 
-        st.markdown(f"### {TIER_STYLE[tier]['icon']} {tier} ({len(tier_recs)})")
+        st.markdown(f"### {tier} ({len(tier_recs)})")
 
         for rec in tier_recs:
             vid = rec["volunteer_id"]
@@ -557,7 +611,7 @@ def render_results_stage():
                     elif rec.get("reasoning"):
                         st.caption(rec["reasoning"])  # scoring-unavailable note
 
-                    if st.button("💬 Get reasoning", key=f"reason_{vid}"):
+                    if st.button("Get reasoning", key=f"reason_{vid}"):
                         bundle = reasoning.build_reasoning_bundle(
                             state.get("user_prompt", ""),
                             ns_desc_by_vid.get(vid, ""),
@@ -662,7 +716,7 @@ def render_results_stage():
     counterfactuals = state.get("counterfactuals", {})
     if counterfactuals:
         with st.expander(
-            "📈 Counterfactual Analysis — Per-Requirement Blocking",
+            "Counterfactual analysis — per-requirement blocking",
             expanded=False,
         ):
             st.caption(
@@ -678,7 +732,7 @@ def render_results_stage():
                     )
 
     # ── Need set match summary (expandable) ────────────────────────────
-    with st.expander("📋 Match Summary by Need Set", expanded=False):
+    with st.expander("Match summary by need set", expanded=False):
         for mg in state.get("matched_volunteers", []):
             st.markdown(
                 f"**{mg['need_set_description']}** "
@@ -692,7 +746,7 @@ def render_results_stage():
 
     # ── Request record (expandable) ────────────────────────────────────
     with st.expander(
-        "💾 Request Record (written to requests data)", expanded=False
+        "Request record (written to requests data)", expanded=False
     ):
         record = state.get("request_record", {})
         if record:
@@ -702,7 +756,7 @@ def render_results_stage():
 
     # ── New request button ─────────────────────────────────────────────
     st.divider()
-    if st.button("🔄 New Request", type="primary", use_container_width=True):
+    if st.button("Start a new request →", type="primary", use_container_width=True):
         st.session_state["stage"] = "input"
         st.session_state["thread_id"] = str(uuid.uuid4())
         st.session_state["graph"] = graph.build_graph()
