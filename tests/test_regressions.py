@@ -1827,6 +1827,14 @@ class TestS13Panels:
         assert "html.escape(c)" in src
         assert "vm-policy-pill" in src
 
+    def test_chip_css_targets_the_real_checkbox_dom(self, app):
+        """Browser-verified on Streamlit 1.60: the checkbox has no
+        data-baseweb attribute and no aria-checked — the live selector is
+        the stCheckbox testid with the :checked property."""
+        assert 'div[data-testid="stCheckbox"] label' in app._BRAND_CSS
+        assert ":has(input:checked)" in app._BRAND_CSS
+        assert 'label[data-baseweb="checkbox"]' not in app._BRAND_CSS
+
 
 class TestS13Footer:
     def test_footer_carries_all_sidebar_config_metadata(self, app):

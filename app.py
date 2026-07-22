@@ -272,20 +272,25 @@ div[class*="st-key-ns-"] {
                    border: 1px solid rgba(154,58,10,.35); color: #9A3A0A;
                    border-radius: 999px; padding: 4px 13px; font-size: 12.5px;
                    font-weight: 500; }
-div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"] {
+/* Streamlit 1.60 checkbox DOM (browser-verified): div[data-testid=
+   stCheckbox] > label > span > input; state = the :checked property. */
+div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label {
   border: 1.5px solid rgba(20,20,19,.18); border-radius: 999px;
   background: #fff; padding: 9px 16px 9px 12px; transition: all .16s ease;
   display: flex; align-items: center; width: fit-content;
 }
-div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"]:has(input[aria-checked="true"]) {
+div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label:has(input:checked) {
   background: #141413; border-color: #141413;
 }
-div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"]:has(input[aria-checked="true"]) p {
+div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label:has(input:checked) p {
   color: #F3F0EE;
 }
 
 /* ── native alert + expander restyle (gap report / soft-pref / errors) ── */
 div[data-testid="stAlert"] { border-radius: 18px; }
+/* the inner container paints its own tint — clear it so the palette
+   backgrounds above show through (browser-verified on 1.60) */
+div[data-testid="stAlertContainer"] { background: transparent; }
 div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) {
   background: #fff; border: 1px solid rgba(56,96,190,.28);
 }
