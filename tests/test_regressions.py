@@ -1466,3 +1466,20 @@ class TestS12Css:
     def test_css_injected_once_in_main(self, app):
         import inspect
         assert "inject_brand_css()" in inspect.getsource(app.main)
+
+
+class TestS12Cards:
+    def test_results_stage_uses_real_bordered_cards_not_raw_html(self, app):
+        """The old tier-color <div> strip never wrapped Streamlit children;
+        cards are now keyed bordered containers styled via _BRAND_CSS."""
+        import inspect
+        src = inspect.getsource(app.render_results_stage)
+        assert "unsafe_allow_html" not in src
+        assert "st.container(border=True" in src
+        assert 'key=f"card-' in src
+
+    def test_tier_style_covers_all_four_tiers(self, app):
+        import inspect
+        src = inspect.getsource(app.render_results_stage)
+        for slug in ("perfect", "good", "technical", "almost"):
+            assert f'"{slug}"' in src

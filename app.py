@@ -448,17 +448,13 @@ def render_results_stage():
     recommendations = state.get("recommendations", [])
 
     tier_order = ["Perfect Match", "Good Match", "Technical Match", "Almost Match"]
-    tier_icons = {
-        "Perfect Match": "🌟",
-        "Good Match": "👍",
-        "Technical Match": "⚙️",
-        "Almost Match": "⚠️",
-    }
-    tier_colors = {
-        "Perfect Match": "#e8f5e9",
-        "Good Match": "#e3f2fd",
-        "Technical Match": "#fff3e0",
-        "Almost Match": "#fce4ec",
+    # §12: slug feeds the keyed-container CSS accent (st-key-card-<slug>-*);
+    # accent hexes live only in _BRAND_CSS so color stays a styling concern.
+    TIER_STYLE = {
+        "Perfect Match": {"slug": "perfect", "icon": "🌟", "badge": "green"},
+        "Good Match": {"slug": "good", "icon": "👍", "badge": "blue"},
+        "Technical Match": {"slug": "technical", "icon": "⚙️", "badge": "orange"},
+        "Almost Match": {"slug": "almost", "icon": "⚠️", "badge": "red"},
     }
 
     for tier in tier_order:
@@ -466,7 +462,7 @@ def render_results_stage():
         if not tier_recs:
             continue
 
-        st.markdown(f"### {tier_icons.get(tier, '')} {tier} ({len(tier_recs)})")
+        st.markdown(f"### {TIER_STYLE[tier]['icon']} {tier} ({len(tier_recs)})")
 
         for rec in tier_recs:
             vid = rec["volunteer_id"]
@@ -477,13 +473,10 @@ def render_results_stage():
             margin = state.get("margins", {}).get(vid, {})
             history = state.get("volunteer_histories", {}).get(vid, {})
 
-            with st.container():
-                st.markdown(
-                    f"<div style='background-color:{tier_colors.get(tier, '#f5f5f5')}; "
-                    f"padding:12px; border-radius:8px; margin-bottom:8px;'>",
-                    unsafe_allow_html=True,
-                )
-
+            # §12: a real bordered card — the key's tier slug picks up the
+            # accent bar from _BRAND_CSS (the old raw-<div> strip never
+            # wrapped Streamlit children and is gone).
+            with st.container(border=True, key=f"card-{TIER_STYLE[tier]['slug']}-{vid}"):
                 # Header: name, ID, pronouns (with NaN guard)
                 pronouns = vol.get("pronouns", "")
                 pronouns_str = f" · {pronouns}" if pronouns and str(pronouns) not in ("nan", "", "NaN") else ""
@@ -527,24 +520,32 @@ def render_results_stage():
 
                 with c1:
                     st.markdown("**Availability**")
-                    st.text(f"Days: {vol['availability_days']}")
-                    st.text(f"Time: {vol['availability_time_blocks']}")
+                    # §12: one markdown block per column (soft line breaks)
+                    # instead of stacked st.text — kills inter-line gaps.
+                    c1_lines = [
+                        f"Days: {vol['availability_days']}",
+                        f"Time: {vol['availability_time_blocks']}",
+                    ]
                     avail_notes = vol.get("availability_notes", "")
                     if avail_notes and str(avail_notes) not in ("nan", "", "NA"):
-                        st.text(f"Notes: {avail_notes}")
+                        c1_lines.append(f"Notes: {avail_notes}")
+                    st.markdown("  \n".join(c1_lines))
 
                 with c2:
                     st.markdown("**Profile**")
-                    st.text(f"Area: {vol['home_area']}")
                     transport = vol.get("transportation", "N/A")
-                    st.text(f"Transport: {transport if str(transport) != 'nan' else 'N/A'}")
-                    st.text(f"Languages: {vol['languages']}")
+                    c2_lines = [
+                        f"Area: {vol['home_area']}",
+                        f"Transport: {transport if str(transport) != 'nan' else 'N/A'}",
+                        f"Languages: {vol['languages']}",
+                    ]
                     pref_roles = vol.get("preferred_roles", "")
                     if pref_roles and str(pref_roles) not in ("nan", "", "NA"):
-                        st.text(f"Preferred roles: {pref_roles}")
+                        c2_lines.append(f"Preferred roles: {pref_roles}")
                     notes = vol.get("notes", "")
                     if notes and str(notes) not in ("nan", "", "NA"):
-                        st.text(f"Notes: {notes}")
+                        c2_lines.append(f"Notes: {notes}")
+                    st.markdown("  \n".join(c2_lines))
 
                 with c3:
                     # ── Capacity Margins ────────────────────────────
@@ -555,25 +556,27 @@ def render_results_stage():
                         max_hrs = margin.get("max_hours_per_week", "?")
                         committed = margin.get("hours_committed_this_week", 0)
 
+                        m_lines = []
                         if margin.get("has_specific_date"):
                             if hrs_rem is not None:
-                                st.text(
+                                m_lines.append(
                                     f"Hours remaining: {hrs_rem} "
                                     f"(of {max_hrs}/wk, {committed} committed)"
                                 )
                             else:
-                                st.text(f"Max hours/wk: {max_hrs}")
+                                m_lines.append(f"Max hours/wk: {max_hrs}")
                             notice_slack = margin.get("notice_slack_days")
                             if notice_slack is not None:
-                                st.text(f"Notice slack: {notice_slack} days")
+                                m_lines.append(f"Notice slack: {notice_slack} days")
                         else:
-                            st.text(f"Max hours/wk: {max_hrs}")
+                            m_lines.append(f"Max hours/wk: {max_hrs}")
                             vol_notice = margin.get("vol_min_notice_days", "?")
-                            st.text(f"Min notice required: {vol_notice} days")
+                            m_lines.append(f"Min notice required: {vol_notice} days")
 
                         extra_skills = margin.get("extra_skills", [])
                         if extra_skills:
-                            st.text(f"Extra skills: {', '.join(extra_skills)}")
+                            m_lines.append(f"Extra skills: {', '.join(extra_skills)}")
+                        st.markdown("  \n".join(m_lines))
 
                     # ── Assignment History ──────────────────────────
                     st.markdown("**History**")
@@ -581,11 +584,11 @@ def render_results_stage():
                     no_shows = history.get("no_shows", 0)
                     no_show_rate = history.get("no_show_rate", 0)
                     last_asgn = history.get("last_assigned", "No prior assignments")
-                    st.text(f"Assignments: {total_asgn}")
-                    st.text(f"No-shows: {no_shows} ({no_show_rate:.0%})")
-                    st.text(f"Last assigned: {last_asgn}")
-
-                st.markdown("</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"Assignments: {total_asgn}  \n"
+                        f"No-shows: {no_shows} ({no_show_rate:.0%})  \n"
+                        f"Last assigned: {last_asgn}"
+                    )
 
     # Handle zero recommendations
     if not recommendations:
