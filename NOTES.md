@@ -57,3 +57,26 @@ the pure-code detector tests.
 - `requests.db` seed-on-absent survived a reboot (ephemeral storage wiped,
   app reseeded cleanly); no `database is locked` errors observed under
   single-user WAL usage.
+
+## §12 restyle verification (2026-07-22)
+
+The aesthetics pass (commits e8404b9..2591d80) was verified locally
+(streamlit run, input stage) and live after push. Cloud picked up
+`.streamlit/config.toml` on the auto-redeploy without a manual reboot.
+Live checks, one full request cycle ("office data entry … Monday, or
+Monday and Saturday"):
+
+- Pinned light theme renders identically for a dark-mode OS viewer;
+  trust-blue primary button, tinted sidebar, Inter type, section
+  dividers, bordered widget groups on input/review.
+- Tier cards render as real bordered containers with accent bars
+  (blue Good card, orange Technical cards observed live).
+- Score chips displayed the raw distribution and made the tier↔score
+  correspondence directly visible: Good at `2,2,4,4 → Total +4`
+  (mid-band again — second Good sighting), Technical floor at
+  `1,1,1,1 → Total −4`.
+- Reasoning fetch rendered inside the styled card; no dissent badge —
+  correct, since the text agreed with the tier (live dissent rate now
+  0/11; the badge path is unit-tested).
+- Suite: 110 tests green at every §12 commit (97 pre-existing + 13 new
+  §12 guards).

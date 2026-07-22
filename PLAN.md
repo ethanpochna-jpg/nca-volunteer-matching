@@ -483,9 +483,17 @@ per-wave rendering of tier results (low value at 1–2 waves; revisit if
 rosters grow); Anthropic Batch API for future offline Insights re-scoring
 only — never the interactive path.
 
-## 12. ACTIVE — aesthetics backlog (activated 2026-07-22)
-The tier-color `<div>` wrappers don't actually wrap Streamlit-native
-children (renderer closes them immediately) — card styling is currently a
-no-op strip. Also: theme, typography, layout polish,
-`.streamlit/config.toml`, score-box chips on cards, a visual dissent
-marker. Activated by Ethan 2026-07-22; UI-only — core/ stays frozen.
+## 12. DONE — aesthetics backlog (activated and executed 2026-07-22)
+All items landed (commits e8404b9..2591d80 + verification), UI-only,
+core/ untouched, suite green at every commit:
+- [x] `.streamlit/config.toml` — pinned trust-blue light theme,
+      typography via headingFontSizes + Inter, badge palette tuning
+- [x] Real tier-colored cards — keyed bordered containers with CSS
+      accent bars replace the no-op `<div>` strip (which is deleted)
+- [x] Score-box chips on cards — raw 1–5 per item + signed total,
+      box-collapse colors; policy badge on scorer failure; none on Almost
+- [x] Visual dissent marker — violet badge on fetched events with
+      dissent=1; display-only, tier never moves
+- [x] Layout polish — section dividers, bordered widget groups,
+      expander icons, sidebar scale + demo badge
+Verified live on nca-volunteer-matching.streamlit.app 2026-07-22.
