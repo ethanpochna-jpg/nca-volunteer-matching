@@ -1436,3 +1436,23 @@ class TestS2LikertConstants:
             ("Somewhat disagree", 2),
             ("Strongly disagree", 1),
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# §12 — aesthetics pass (activated 2026-07-22): theme, cards, chips, dissent
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS12Theme:
+    def test_config_toml_exists_and_pins_the_brand_theme(self, app):
+        """Pinned light + trust blue: the public demo must look the same for
+        every viewer, so the theme lives in committed config, not viewer
+        preference."""
+        import tomllib
+        from pathlib import Path
+        cfg_path = Path(app.__file__).parent / ".streamlit" / "config.toml"
+        assert cfg_path.exists()
+        cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        theme = cfg["theme"]
+        assert theme["base"] == "light"
+        assert theme["primaryColor"] == "#2563EB"
+        assert "sidebar" in theme

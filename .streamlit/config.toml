@@ -1,0 +1,41 @@
+# §12 aesthetics — pinned trust-blue light theme.
+# Pinned (base = "light" + explicit palette) so every viewer of the public
+# demo sees the same designed look regardless of OS dark-mode preference.
+# Fonts load from Google Fonts via Streamlit 1.60's native "<name>:<url>"
+# mechanism; offline the app silently falls back to the default sans.
+
+[theme]
+base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#1F2937"
+linkColor = "#1D4ED8"
+borderColor = "#DBE2EC"
+dataframeBorderColor = "#DBE2EC"
+showWidgetBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+headingFontSizes = ["1.7rem", "1.35rem", "1.15rem", "1rem", "0.9rem", "0.85rem"]
+headingFontWeights = [700, 650, 600, 600, 600, 600]
+codeBackgroundColor = "#EFF3F9"
+# Badge palette tuning — score chips and the dissent marker inherit these,
+# so chip colors harmonize with the brand without any custom CSS.
+blueBackgroundColor = "#E8F0FE"
+blueTextColor = "#1D4ED8"
+greenBackgroundColor = "#E7F3EA"
+greenTextColor = "#1E6B33"
+orangeBackgroundColor = "#FDF0E1"
+orangeTextColor = "#9A5B00"
+violetBackgroundColor = "#F1ECFB"
+violetTextColor = "#6D28D9"
+
+[theme.sidebar]
+backgroundColor = "#F0F4FA"
+secondaryBackgroundColor = "#E4EBF5"
+borderColor = "#D5DEEC"
+
+[client]
+toolbarMode = "viewer"
