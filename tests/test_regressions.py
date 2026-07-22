@@ -1792,6 +1792,42 @@ class TestS13GraphLifecycle:
         assert rid_a != rid_b
 
 
+class TestS13Panels:
+    def test_skill_checkbox_keys_survive_the_pill_styling(self, app):
+        """§13 (s13-7): the toggle-chip look is pure CSS on the keyed
+        container — checkbox identity and the confirmed/unchecked
+        derivation must be untouched."""
+        import inspect
+        src = inspect.getsource(app.render_skills_review_stage)
+        assert 'key=f"skill_' in src
+        assert "unchecked = [s for s in extracted if s not in confirmed]" in src
+
+    def test_need_set_cards_render_every_field(self, app):
+        """Do-not-break checklist: every need-set field the expander showed
+        survives the move to keyed cards."""
+        import inspect
+        src = inspect.getsource(app.render_skills_review_stage)
+        for field in ("availability_days", "availability_time_blocks",
+                      "languages", "min_hours", "location_area",
+                      "transportation_needed"):
+            assert field in src
+
+    def test_stage_panels_are_keyed(self, app):
+        import inspect
+        src1 = inspect.getsource(app.render_input_stage)
+        assert 'key="panel-hard-reqs"' in src1
+        assert 'key="panel-scheduling"' in src1
+        src2 = inspect.getsource(app.render_skills_review_stage)
+        assert 'key="skill-chips"' in src2
+        assert 'key=f"ns-' in src2
+
+    def test_policy_cert_pills_escape_cert_names(self, app):
+        import inspect
+        src = inspect.getsource(app.render_skills_review_stage)
+        assert "html.escape(c)" in src
+        assert "vm-policy-pill" in src
+
+
 class TestS13Footer:
     def test_footer_carries_all_sidebar_config_metadata(self, app):
         """§13 (s13-6, D13-3): the ink footer replaces the sidebar and is

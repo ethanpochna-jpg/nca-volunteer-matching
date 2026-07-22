@@ -250,6 +250,55 @@ div[class*="st-key-reason_"] button {
 @media (max-width: 1000px) {
   .vm-footer-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── stage 1–2 panels, need-set cards, skill pills (s13-7) ────────────── */
+div[class*="st-key-panel-"], div[class*="st-key-skill-chips"] {
+  background: #FCFBFA; border: 1px solid rgba(20,20,19,.1) !important;
+  border-radius: 24px; padding: 22px 24px;
+}
+div[class*="st-key-ns-"] {
+  background: #FCFBFA; border: 1px solid rgba(20,20,19,.1) !important;
+  border-radius: 20px; padding: 18px 20px;
+}
+.vm-count-pill { display: inline-flex; font-family: ui-monospace, Menlo, monospace;
+                 font-size: 12px; font-weight: 600; background: #F3F0EE;
+                 border: 1px solid rgba(20,20,19,.12); border-radius: 999px;
+                 padding: 4px 11px; color: #33302c; }
+.vm-policy-row   { display: flex; align-items: center; gap: 9px;
+                   flex-wrap: wrap; margin: 8px 0 2px; }
+.vm-policy-label { font-weight: 700; font-size: 11px; letter-spacing: .12em;
+                   text-transform: uppercase; color: #9A3A0A; }
+.vm-policy-pill  { display: inline-flex; background: #fff;
+                   border: 1px solid rgba(154,58,10,.35); color: #9A3A0A;
+                   border-radius: 999px; padding: 4px 13px; font-size: 12.5px;
+                   font-weight: 500; }
+div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"] {
+  border: 1.5px solid rgba(20,20,19,.18); border-radius: 999px;
+  background: #fff; padding: 9px 16px 9px 12px; transition: all .16s ease;
+  display: flex; align-items: center; width: fit-content;
+}
+div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"]:has(input[aria-checked="true"]) {
+  background: #141413; border-color: #141413;
+}
+div[class*="st-key-skill-chips"] label[data-baseweb="checkbox"]:has(input[aria-checked="true"]) p {
+  color: #F3F0EE;
+}
+
+/* ── native alert + expander restyle (gap report / soft-pref / errors) ── */
+div[data-testid="stAlert"] { border-radius: 18px; }
+div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) {
+  background: #fff; border: 1px solid rgba(56,96,190,.28);
+}
+div[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) {
+  background: #FCFBFA; border: 1px solid rgba(207,69,0,.3);
+}
+div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {
+  background: #FCFBFA; border: 1px solid rgba(154,58,10,.5);
+}
+div[data-testid="stExpander"] > details {
+  background: #FCFBFA; border: 1px solid rgba(20,20,19,.1);
+  border-radius: 18px;
+}
 </style>
 """
 
@@ -754,8 +803,8 @@ def render_input_stage():
         "Anything selected here is treated as a non-negotiable filter."
     )
 
-    # §12: bordered group — pure layout, widgets and params unchanged.
-    with st.container(border=True):
+    # §13: keyed panel — pure layout, widgets and params unchanged.
+    with st.container(border=True, key="panel-hard-reqs"):
         col1, col2 = st.columns(2)
 
         with col1:
@@ -777,8 +826,8 @@ def render_input_stage():
             )
 
     st.markdown(format_eyebrow("Scheduling"), unsafe_allow_html=True)
-    # §12: bordered group — pure layout, widgets and params unchanged.
-    with st.container(border=True):
+    # §13: keyed panel — pure layout, widgets and params unchanged.
+    with st.container(border=True, key="panel-scheduling"):
         col_date, col_notify = st.columns(2)
 
         with col_date:
@@ -927,28 +976,37 @@ def render_skills_review_stage():
         except (ValueError, TypeError):
             pass
 
-    # Show need sets
-    with st.expander("Need sets", expanded=True, icon=":material/inventory_2:"):
-        for i, ns in enumerate(state["need_sets"]):
-            st.markdown(f"**Need Set {i + 1}:** {ns['description']} (count: {ns['count']})")
-            details = []
-            days = ns.get("availability_days", {})
-            if days.get("AND") or days.get("OR"):
-                details.append(f"Days: AND={days.get('AND', [])}, OR={days.get('OR', [])}")
-            blocks = ns.get("availability_time_blocks", [])
-            if blocks:
-                details.append(f"Time blocks: {blocks}")
-            langs = ns.get("languages", {})
-            if langs.get("AND") or langs.get("OR"):
-                details.append(f"Languages: AND={langs.get('AND', [])}, OR={langs.get('OR', [])}")
-            if ns.get("min_hours"):
-                details.append(f"Min hours: {ns['min_hours']}")
-            if ns.get("location_area"):
-                details.append(f"Location (informational only): {ns['location_area']}")
-            if ns.get("transportation_needed"):
-                details.append(f"Transportation: {ns['transportation_needed']}")
-            for d in details:
-                st.caption(f"  {d}")
+    # Show need sets — §13: a grid of keyed cards (mockup) instead of the
+    # expander.  Descriptions are model text, so they stay in native
+    # markdown; only the integer count enters HTML (the ×count pill).
+    st.markdown(format_eyebrow("Need sets"), unsafe_allow_html=True)
+    ns_cols = st.columns(2)
+    for i, ns in enumerate(state["need_sets"]):
+        with ns_cols[i % 2]:
+            with st.container(border=True, key=f"ns-{i}"):
+                st.markdown(f"**{ns['description']}**")
+                st.markdown(
+                    f'<span class="vm-count-pill">×{int(ns["count"])}</span>',
+                    unsafe_allow_html=True,
+                )
+                details = []
+                days = ns.get("availability_days", {})
+                if days.get("AND") or days.get("OR"):
+                    details.append(f"Days: AND={days.get('AND', [])}, OR={days.get('OR', [])}")
+                blocks = ns.get("availability_time_blocks", [])
+                if blocks:
+                    details.append(f"Time blocks: {blocks}")
+                langs = ns.get("languages", {})
+                if langs.get("AND") or langs.get("OR"):
+                    details.append(f"Languages: AND={langs.get('AND', [])}, OR={langs.get('OR', [])}")
+                if ns.get("min_hours"):
+                    details.append(f"Min hours: {ns['min_hours']}")
+                if ns.get("location_area"):
+                    details.append(f"Location (informational only): {ns['location_area']}")
+                if ns.get("transportation_needed"):
+                    details.append(f"Transportation: {ns['transportation_needed']}")
+                for d in details:
+                    st.caption(d)
 
     # ── Skills confirmation ────────────────────────────────────────────
     st.markdown(format_eyebrow("Confirm required skills"), unsafe_allow_html=True)
@@ -964,8 +1022,9 @@ def render_skills_review_stage():
         confirmed = []
     else:
         confirmed = []
-        # §12: bordered group — pure layout, checkbox keys unchanged.
-        with st.container(border=True):
+        # §13: keyed panel — the chip styling rides the container class;
+        # checkbox keys and the confirmed/unchecked derivation unchanged.
+        with st.container(border=True, key="skill-chips"):
             cols = st.columns(min(len(extracted), 3))
             for i, skill in enumerate(extracted):
                 with cols[i % len(cols)]:
@@ -977,14 +1036,31 @@ def render_skills_review_stage():
     # Compute unchecked skills for soft-preference forwarding
     unchecked = [s for s in extracted if s not in confirmed]
 
+    if extracted:
+        st.caption(
+            f"{len(confirmed)} hard requirement(s) · {len(unchecked)} "
+            f"preference(s) forwarded to ranking"
+        )
+
     # Show what mandatory certs will be auto-added.  Fix 1 mirror: computed
     # from extracted ∪ confirmed — the same work-type basis the matcher
     # enforces — so the user sees the certs even with nothing checked.
+    # §13: clay policy pills (cert names escaped before entering HTML).
     auto_certs = policy.infer_mandatory_certs(sorted(set(extracted) | set(confirmed)))
     if auto_certs:
+        pills = "".join(
+            f'<span class="vm-policy-pill">{html.escape(c)}</span>'
+            for c in auto_certs
+        )
+        st.markdown(
+            '<div class="vm-policy-row">'
+            '<span class="vm-policy-label">Policy-required, auto-added</span>'
+            f"{pills}</div>",
+            unsafe_allow_html=True,
+        )
         st.caption(
-            f"Policy-required, auto-added — based on the type of work "
-            f"identified: {', '.join(auto_certs)}"
+            "Added automatically based on the type of work identified — "
+            "safety certifications fail closed."
         )
 
     # ── Action buttons ─────────────────────────────────────────────────
