@@ -279,10 +279,13 @@ div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label {
   background: #fff; padding: 9px 16px 9px 12px; transition: all .16s ease;
   display: flex; align-items: center; width: fit-content;
 }
-div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label:has(input:checked) {
+/* :has() must stay OFF the subject compound (hoisted to the stCheckbox
+   ancestor): subject-position :has() misses style invalidation in some
+   Chromium builds while the non-subject form applies reliably. */
+div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"]:has(input:checked) label {
   background: #141413; border-color: #141413;
 }
-div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"] label:has(input:checked) p {
+div[class*="st-key-skill-chips"] div[data-testid="stCheckbox"]:has(input:checked) label p {
   color: #F3F0EE;
 }
 
