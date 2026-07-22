@@ -128,6 +128,18 @@ def format_score_chips(rec: dict) -> str:
     return " ".join(chips)
 
 
+def format_dissent_badge(event: dict) -> str | None:
+    """§12 visual dissent marker for a fetched reasoning event.
+
+    Violet on purpose — distinct from both the B2B-orange chips and the
+    Almost-Match red accent. The tier itself never moves (I5/D-G); this
+    badge only surfaces that the logged event carried dissent=1.
+    """
+    if event.get("dissent"):
+        return ":violet-badge[⚑ Dissent — reasoning disagrees; tier unchanged]"
+    return None
+
+
 def main():
     """Entry point: page config, sidebar, session state, stage dispatch."""
 
@@ -532,6 +544,9 @@ def render_results_stage():
                     if cached:
                         # I5/D-G: text shown verbatim; dissent is logged,
                         # never applied — the tier above stays as scored.
+                        dissent_badge = format_dissent_badge(cached)
+                        if dissent_badge:
+                            st.markdown(dissent_badge)
                         st.caption(cached["text"])
                     elif rec.get("reasoning"):
                         st.caption(rec["reasoning"])  # scoring-unavailable note

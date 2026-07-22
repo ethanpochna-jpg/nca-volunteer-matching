@@ -1519,3 +1519,22 @@ class TestS12Chips:
             "total_score": -4,
         }
         assert ":blue-badge[Total -4]" in app.format_score_chips(rec)
+
+
+class TestS12Dissent:
+    def test_dissent_event_yields_violet_badge(self, app):
+        badge = app.format_dissent_badge({"dissent": True, "text": "On second thought…"})
+        assert badge is not None
+        assert badge.startswith(":violet-badge[")
+        assert "tier unchanged" in badge
+
+    def test_agreeing_event_yields_no_badge(self, app):
+        assert app.format_dissent_badge({"dissent": False, "text": "…"}) is None
+
+    def test_missing_flag_yields_no_badge(self, app):
+        assert app.format_dissent_badge({}) is None
+
+    def test_badge_rendered_in_cached_reasoning_branch(self, app):
+        import inspect
+        src = inspect.getsource(app.render_results_stage)
+        assert "format_dissent_badge(cached)" in src
