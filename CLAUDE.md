@@ -63,9 +63,13 @@ output via forced tool choice on a thinking-enabled call — native
   current file imports it); Phase 2 item S1 deletes it. Do not port the
   old single-call recommender to Anthropic — it is deleted, not migrated.
 - Do not implement anything from PLAN.md §11 (performance). §12
-  (aesthetics) was activated 2026-07-22 — UI-only restyle; core/ stays
-  frozen. Do not touch `app__24_.py` / `app__25_.py` (legacy — the higher
-  filename number is the OLDER code).
+  (aesthetics) executed 2026-07-22; §13 (handoff reskin, outer-dir
+  `handoff/` folder is the spec) was activated by Ethan the same day —
+  UI-only restyle; core/ stays frozen. Per D13-4, §12 guard tests that
+  pin the superseded trust-blue look are rewritten in the same commit as
+  the change they guard; Phase-3 behavior guards stay binding. Do not
+  touch `app__24_.py` / `app__25_.py` (legacy — the higher filename
+  number is the OLDER code).
 - Secrets: `st.secrets` → env fallback. Nothing secret ever committed;
   check history before pushing.
 

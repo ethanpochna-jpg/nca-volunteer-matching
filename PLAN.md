@@ -23,7 +23,9 @@ Anthropic docs on 2026-07-21.
    at every commit.
 4. §11 (performance) at the bottom remains **reserved** — do not implement
    anything from it, even where it looks easy. §12 (aesthetics) was
-   activated by Ethan on 2026-07-22 and is now in scope.
+   activated by Ethan on 2026-07-22 and executed the same day. §13
+   (handoff reskin) was activated by Ethan on 2026-07-22 and is now in
+   scope.
 5. Audit fix numbers 0, 7, 8, and 9 are **intentionally absent** from
    Phase 1: they patched the old single-call recommender, which this plan
    replaces wholesale in Phase 2 before it would ever ship. Superseded
@@ -497,3 +499,47 @@ core/ untouched, suite green at every commit:
 - [x] Layout polish — section dividers, bordered widget groups,
       expander icons, sidebar scale + demo badge
 Verified live on nca-volunteer-matching.streamlit.app 2026-07-22.
+Superseded visually by §13 the same day; §12's engineering (keyed-container
+CSS pattern, pure format helpers, config-toml theming) is the foundation
+§13 builds on.
+
+## 13. ACTIVE — handoff reskin (activated by Ethan 2026-07-22)
+
+Claude Design delivered a replacement visual system in the outer-dir
+`handoff/` folder: `HANDOFF.md` (behavior spec + Streamlit mapping),
+`DESIGN.md` (design system), `mockup.html` / `source.dc.html` (hi-fi
+visual source of truth — every style inline). It supersedes §12's
+trust-blue look wholesale. UI-only: `app.py`, `.streamlit/config.toml`,
+`tests/`; `core/` stays frozen; the HANDOFF do-not-break checklist is
+binding (every current element survives the reskin).
+
+Scope: warm cream/ink editorial theme (Sofia Sans, canvas `#F3F0EE`, ink
+`#141413`, single rust accent `#CF4500`), gated step-nav pill
+(01 Describe / 02 Review / 03 Recommend with sticky `max_reached`
+unlocking), neutral rec cards with ramp tier headers
+(`#8a3410`/`#CF4500`/`#E4713C`/`#C99979`) replacing the §12 accent bars,
+HTML dot-pill score chips (good ink / neutral taupe / flag orange — never
+green/red), sidebar folded into a full-bleed ink footer, all emoji
+stripped.
+
+Decisions (locked by Ethan 2026-07-22):
+
+| # | Decision |
+|---|----------|
+| D13-1 | **Staleness deviation from HANDOFF §1:** a fresh successful Analyze sets `max_reached = 1` exactly and pops `final_state` — Recommend re-locks. The spec's sticky `max(cur,1)` would surface the prior run's results against a new extraction and mis-log reasoning events under the prior `request_id`. |
+| D13-2 | Confirm anchors at the interrupt checkpoint (`update_state` on the stored breakpoint `snapshot.config`, then `invoke(None, forked)`). An unchanged re-confirm with results present navigates without re-running (no duplicate scorer wave, no duplicate record); a changed skill selection forks from the interrupt and re-runs, writing a new request record. |
+| D13-3 | Config metadata (models, data files, demo note) lives in the ink footer — HANDOFF §4's open decision, resolved. |
+| D13-4 | The §12 guard tests pin the superseded look; each colliding test is rewritten to the new spec **in the same commit** as the change it guards. The Phase-3 behavior guards are untouched and stay binding. |
+
+Work items (one commit each, prefix `s13-N`):
+- [ ] s13-1 repin theme to warm cream/ink editorial palette
+- [ ] s13-2 strip emoji and retitle stages with eyebrow headers
+- [ ] s13-3 gated step nav and sticky stage state machine
+- [ ] s13-4 score chips, total pill, and dissent tag as dot pills
+- [ ] s13-5 rec cards with ramp tier headers and neutral surfaces
+- [ ] s13-6 replace sidebar with full-bleed ink footer
+- [ ] s13-7 stage 1 and 2 panels, skill chips, need-set cards
+
+**Exit:** suite green at every commit; full local browser pass covering
+the do-not-break checklist and the gated-nav state machine (incl. D13-1
+re-lock and D13-2 no-op skip); pushed and re-verified on the live URL.
