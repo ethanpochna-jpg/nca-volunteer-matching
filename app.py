@@ -66,7 +66,7 @@ import streamlit as st          # UI framework for the multi-step form interface
 from dotenv import load_dotenv
 load_dotenv()
 
-from core import graph, llm, matching, policy, reasoning, records
+from core import graph, llm, matching, policy, reasoning, records, scoring
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -93,6 +93,39 @@ div.block-container                  { padding-top: 2.2rem; }
 def inject_brand_css() -> None:
     """Inject the §12 brand CSS once per rerun, right after page config."""
     st.markdown(_BRAND_CSS, unsafe_allow_html=True)
+
+
+# §12 score chips: raw 1–5 selections rendered as theme-palette badges.
+# Box→color mirrors the collapse semantics (T2B good / Neutral flat /
+# B2B bad) without the model or the UI ever re-deciding a tier.
+_CHIP_LABELS = {
+    "overall_fit": "Fit",
+    "schedule_friction": "Schedule",
+    "willingness": "Willing",
+    "recommendation": "Recommend",
+}
+_BOX_BADGE = {"T2B": "green", "Neutral": "gray", "B2B": "orange"}
+
+
+def format_score_chips(rec: dict) -> str:
+    """Markdown badge chips for one recommendation card.
+
+    Pure function so the chip contract is unit-testable: Almost Match recs
+    (no raw_selections key) get no chips; a failed scorer (raw_selections
+    is None) gets the policy-fallback badge, never fake scores.
+    """
+    if "raw_selections" not in rec:
+        return ""
+    if rec.get("raw_selections") is None:
+        return ":gray-badge[Scoring unavailable — Technical by policy]"
+    chips = [
+        f":{_BOX_BADGE[box]}-badge[{_CHIP_LABELS[item['key']]} {sel}]"
+        for item, sel, box in zip(
+            scoring.LIKERT_ITEMS, rec["raw_selections"], rec["boxes"]
+        )
+    ]
+    chips.append(f":blue-badge[Total {rec['total_score']:+d}]")
+    return " ".join(chips)
 
 
 def main():
@@ -481,6 +514,12 @@ def render_results_stage():
                 pronouns = vol.get("pronouns", "")
                 pronouns_str = f" · {pronouns}" if pronouns and str(pronouns) not in ("nan", "", "NaN") else ""
                 st.markdown(f"**{vol['preferred_name']}** ({vid}){pronouns_str}")
+
+                # §12: per-item score chips (raw distribution, stored in the
+                # record — displayed, never re-tiered here).
+                chips = format_score_chips(rec)
+                if chips:
+                    st.markdown(chips)
 
                 # ── Reasoning (S6) ─────────────────────────────────
                 if tier == "Almost Match":

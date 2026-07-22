@@ -1483,3 +1483,39 @@ class TestS12Cards:
         src = inspect.getsource(app.render_results_stage)
         for slug in ("perfect", "good", "technical", "almost"):
             assert f'"{slug}"' in src
+
+
+class TestS12Chips:
+    def test_full_rec_renders_four_item_chips_plus_total(self, app):
+        rec = {
+            "raw_selections": [5, 4, 3, 2],
+            "boxes": ["T2B", "T2B", "Neutral", "B2B"],
+            "total_score": 6,
+        }
+        chips = app.format_score_chips(rec)
+        assert chips.count(":green-badge[") == 2
+        assert chips.count(":gray-badge[") == 1
+        assert chips.count(":orange-badge[") == 1
+        assert ":blue-badge[Total +6]" in chips
+        # Labels ride in item order: Fit, Schedule, Willing, Recommend.
+        assert chips.index("Fit 5") < chips.index("Schedule 4") \
+            < chips.index("Willing 3") < chips.index("Recommend 2")
+
+    def test_failed_scorer_gets_policy_badge_never_fake_scores(self, app):
+        rec = {"raw_selections": None, "boxes": None, "total_score": None}
+        assert app.format_score_chips(rec) == (
+            ":gray-badge[Scoring unavailable — Technical by policy]"
+        )
+
+    def test_almost_match_rec_gets_no_chips(self, app):
+        assert app.format_score_chips(
+            {"volunteer_id": "V-0001", "tier": "Almost Match", "reasoning": "x"}
+        ) == ""
+
+    def test_negative_total_renders_signed(self, app):
+        rec = {
+            "raw_selections": [1, 1, 1, 1],
+            "boxes": ["B2B", "B2B", "B2B", "B2B"],
+            "total_score": -4,
+        }
+        assert ":blue-badge[Total -4]" in app.format_score_chips(rec)
