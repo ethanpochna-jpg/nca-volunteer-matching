@@ -21,8 +21,9 @@ Anthropic docs on 2026-07-21.
    only then does Phase 4 move code without changing behavior.
 3. Every item ships in its own commit with its regression test. Suite green
    at every commit.
-4. Two sections at the bottom are **reserved** (performance, aesthetics).
-   Do not implement anything from them, even where it looks easy.
+4. §11 (performance) at the bottom remains **reserved** — do not implement
+   anything from it, even where it looks easy. §12 (aesthetics) was
+   activated by Ethan on 2026-07-22 and is now in scope.
 5. Audit fix numbers 0, 7, 8, and 9 are **intentionally absent** from
    Phase 1: they patched the old single-call recommender, which this plan
    replaces wholesale in Phase 2 before it would ever ship. Superseded
@@ -50,8 +51,8 @@ native `anthropic` SDK (§1b explains why not LangChain wrappers).
 
 **Goal:** publish a production-grade public demo on Streamlit Community
 Cloud. Production-grade = three pillars: **bugs** (Phase 1), **scoring
-architecture + speed** (Phase 2), **aesthetics** (reserved for its own
-session).
+architecture + speed** (Phase 2), **aesthetics** (§12 — activated
+2026-07-22).
 
 ### 1a. Model matrix (fixed — no UI selector; D-J)
 
@@ -151,7 +152,7 @@ Anthropic; it is deleted, not migrated.
         fixtures.py
       requirements.txt        ← includes langchain-openai THROUGH Phase 1 only (§1b note)
       runtime / python pin    ← per current Streamlit Cloud docs (verify, don't assume)
-      .streamlit/             ← empty placeholder; theme is aesthetics-pass material
+      .streamlit/             ← config.toml lands in the §12 aesthetics pass
       .gitignore              ← .env, __pycache__/, *.pyc, requests.db, .streamlit/secrets.toml
       PLAN.md  CLAUDE.md  README.md
 
@@ -471,7 +472,7 @@ is the acceptance criterion.
    hardening, and the record will show it); dissent rate.
 
 **Exit / definition of done:** G1–G6 pass on the deployed URL; suite green
-in a documented run; no reserved-section code present; PLAN phases checked
+in a documented run; no §11 (performance) code present; PLAN phases checked
 off in the final commit message.
 
 ## 11. RESERVED — performance backlog (DO NOT IMPLEMENT)
@@ -482,9 +483,9 @@ per-wave rendering of tier results (low value at 1–2 waves; revisit if
 rosters grow); Anthropic Batch API for future offline Insights re-scoring
 only — never the interactive path.
 
-## 12. RESERVED — aesthetics backlog (DO NOT IMPLEMENT)
+## 12. ACTIVE — aesthetics backlog (activated 2026-07-22)
 The tier-color `<div>` wrappers don't actually wrap Streamlit-native
 children (renderer closes them immediately) — card styling is currently a
 no-op strip. Also: theme, typography, layout polish,
 `.streamlit/config.toml`, score-box chips on cards, a visual dissent
-marker. Separate session.
+marker. Activated by Ethan 2026-07-22; UI-only — core/ stays frozen.

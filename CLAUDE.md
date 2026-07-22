@@ -62,9 +62,10 @@ output via forced tool choice on a thinking-enabled call — native
 - `langchain-openai` exists in requirements only through Phase 1 (the
   current file imports it); Phase 2 item S1 deletes it. Do not port the
   old single-call recommender to Anthropic — it is deleted, not migrated.
-- Do not implement anything from PLAN.md §11 (performance) or §12
-  (aesthetics). Do not restyle UI. Do not touch `app__24_.py` /
-  `app__25_.py` (legacy — the higher filename number is the OLDER code).
+- Do not implement anything from PLAN.md §11 (performance). §12
+  (aesthetics) was activated 2026-07-22 — UI-only restyle; core/ stays
+  frozen. Do not touch `app__24_.py` / `app__25_.py` (legacy — the higher
+  filename number is the OLDER code).
 - Secrets: `st.secrets` → env fallback. Nothing secret ever committed;
   check history before pushing.
 
