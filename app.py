@@ -129,6 +129,35 @@ div[class*="st-key-nav-new-request"] button {
                   to   { opacity: 1; transform: none; } }
 div[class*="st-key-stage-"] { animation: omUp .5s cubic-bezier(.2,.7,.2,1) both; }
 
+/* ── score chips / total / dissent (DESIGN §4 atoms) ──────────────────── */
+.vm-chip-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+               margin: 4px 0 2px; }
+.vm-chip     { display: inline-flex; align-items: center; gap: 8px;
+               border: 1px solid rgba(20,20,19,.15); border-radius: 999px;
+               padding: 6px 13px 6px 11px; font-size: 13px; color: #33302c; }
+.vm-chip b   { font-family: ui-monospace, Menlo, monospace; font-weight: 600;
+               color: #141413; }
+.vm-dot      { width: 7px; height: 7px; border-radius: 50%;
+               display: inline-block; flex: 0 0 auto; }
+.vm-dot-good { background: #141413; }
+.vm-dot-flat { background: #C9B8A8; }
+.vm-dot-flag { background: #CF4500; }
+.vm-total    { display: inline-flex; align-items: center; gap: 7px;
+               background: #141413; color: #F3F0EE; border-radius: 999px;
+               padding: 5px 14px; font-size: 13px; font-weight: 500; }
+.vm-total > span { opacity: .65; font-size: 11px; letter-spacing: .04em; }
+.vm-total b  { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+.vm-note     { display: inline-flex; align-items: center;
+               background: #F1EFEC; border: 1px solid rgba(20,20,19,.12);
+               border-radius: 999px; padding: 6px 15px; font-size: 12.5px;
+               color: #8a8279; }
+.vm-dissent  { display: inline-flex; align-items: center; gap: 8px;
+               border: 1px solid rgba(154,58,10,.4); color: #9A3A0A;
+               border-radius: 999px; padding: 2px 11px; font-size: 11px;
+               font-weight: 600; }
+.vm-dissent i { width: 6px; height: 6px; background: #9A3A0A;
+                transform: rotate(45deg); display: inline-block; flex: 0 0 auto; }
+
 /* ── tier cards (§12 accent bars — replaced by s13-5 neutral surfaces) ── */
 div[class*="st-key-card-perfect-"]   { border-left: 4px solid #2E7D32; background: #F4FAF5; }
 div[class*="st-key-card-good-"]      { border-left: 4px solid #2563EB; background: #F3F7FE; }
@@ -292,48 +321,65 @@ def confirm_is_noop(confirmed: list, last_confirmed, final_present: bool) -> boo
     )
 
 
-# §12 score chips: raw 1–5 selections rendered as theme-palette badges.
-# Box→color mirrors the collapse semantics (T2B good / Neutral flat /
-# B2B bad) without the model or the UI ever re-deciding a tier.
+# §13 score chips: raw 1–5 selections rendered as outline dot pills.
+# Box→dot-tone mirrors the collapse semantics (T2B good / Neutral flat /
+# B2B flag) without the model or the UI ever re-deciding a tier; the
+# tone hexes live only in _BRAND_CSS so color stays a styling concern.
 _CHIP_LABELS = {
     "overall_fit": "Fit",
     "schedule_friction": "Schedule",
     "willingness": "Willing",
     "recommendation": "Recommend",
 }
-_BOX_BADGE = {"T2B": "green", "Neutral": "gray", "B2B": "orange"}
+_BOX_DOT = {"T2B": "good", "Neutral": "flat", "B2B": "flag"}
 
 
 def format_score_chips(rec: dict) -> str:
-    """Markdown badge chips for one recommendation card.
+    """Dot-pill score chips for one recommendation card (HANDOFF §2c).
 
     Pure function so the chip contract is unit-testable: Almost Match recs
     (no raw_selections key) get no chips; a failed scorer (raw_selections
-    is None) gets the policy-fallback badge, never fake scores.
+    is None) gets the policy-fallback note, never fake scores.  Labels are
+    code constants and selections are code-supplied ints — nothing dynamic
+    enters this HTML, so no escaping is needed by construction.
     """
     if "raw_selections" not in rec:
         return ""
     if rec.get("raw_selections") is None:
-        return ":gray-badge[Scoring unavailable — Technical by policy]"
-    chips = [
-        f":{_BOX_BADGE[box]}-badge[{_CHIP_LABELS[item['key']]} {sel}]"
+        return '<span class="vm-note">Scoring unavailable — Technical by policy</span>'
+    return "".join(
+        f'<span class="vm-chip"><i class="vm-dot vm-dot-{_BOX_DOT[box]}"></i>'
+        f"{_CHIP_LABELS[item['key']]} <b>{sel}</b></span>"
         for item, sel, box in zip(
             scoring.LIKERT_ITEMS, rec["raw_selections"], rec["boxes"]
         )
-    ]
-    chips.append(f":blue-badge[Total {rec['total_score']:+d}]")
-    return " ".join(chips)
+    )
+
+
+def format_total_pill(rec: dict) -> str:
+    """Filled-ink TOTAL pill with the mono signed sum (DESIGN §4).
+
+    Split from the chips so s13-5 can seat it in the card-header row.
+    Empty for Almost Match recs and the failed-scorer fallback — a
+    fabricated total would contradict the no-fake-Neutral rule.  Zero
+    renders unsigned ("0") per the design spec; nonzero sums are signed.
+    """
+    if "raw_selections" not in rec or rec.get("raw_selections") is None:
+        return ""
+    total = rec["total_score"]
+    value = f"{total:+d}" if total else "0"
+    return f'<span class="vm-total"><span>TOTAL</span> <b>{value}</b></span>'
 
 
 def format_dissent_badge(event: dict) -> str | None:
-    """§12 visual dissent marker for a fetched reasoning event.
+    """§13 dissent tag for a fetched reasoning event (DESIGN §4).
 
-    Violet on purpose — distinct from both the B2B-orange chips and the
-    Almost-Match red accent. The tier itself never moves (I5/D-G); this
-    badge only surfaces that the logged event carried dissent=1.
+    Clay outline with the rotated-square marker — distinct from the
+    flag-orange chip dots. The tier itself never moves (I5/D-G); this
+    tag only surfaces that the logged event carried dissent=1.
     """
     if event.get("dissent"):
-        return ":violet-badge[Dissent — reasoning disagrees; tier unchanged]"
+        return '<span class="vm-dissent"><i></i>Dissent — tier unchanged</span>'
     return None
 
 
@@ -871,11 +917,16 @@ def render_results_stage():
                 pronouns_str = f" · {pronouns}" if pronouns and str(pronouns) not in ("nan", "", "NaN") else ""
                 st.markdown(f"**{vol['preferred_name']}** ({vid}){pronouns_str}")
 
-                # §12: per-item score chips (raw distribution, stored in the
-                # record — displayed, never re-tiered here).
+                # §13: per-item dot-pill chips (raw distribution, stored in
+                # the record — displayed, never re-tiered here).  The total
+                # pill rides the row until s13-5 seats it in the header.
                 chips = format_score_chips(rec)
-                if chips:
-                    st.markdown(chips)
+                total = format_total_pill(rec)
+                if chips or total:
+                    st.markdown(
+                        f'<div class="vm-chip-row">{chips}{total}</div>',
+                        unsafe_allow_html=True,
+                    )
 
                 # ── Reasoning (S6) ─────────────────────────────────
                 if tier == "Almost Match":
@@ -890,7 +941,7 @@ def render_results_stage():
                         # never applied — the tier above stays as scored.
                         dissent_badge = format_dissent_badge(cached)
                         if dissent_badge:
-                            st.markdown(dissent_badge)
+                            st.markdown(dissent_badge, unsafe_allow_html=True)
                         st.caption(cached["text"])
                     elif rec.get("reasoning"):
                         st.caption(rec["reasoning"])  # scoring-unavailable note

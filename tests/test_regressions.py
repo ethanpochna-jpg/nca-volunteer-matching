@@ -1510,12 +1510,16 @@ class TestS12Css:
 
 
 class TestS12Cards:
-    def test_results_stage_uses_real_bordered_cards_not_raw_html(self, app):
-        """The old tier-color <div> strip never wrapped Streamlit children;
-        cards are now keyed bordered containers styled via _BRAND_CSS."""
+    def test_results_stage_uses_keyed_bordered_cards(self, app):
+        """Cards are keyed bordered containers styled via _BRAND_CSS.
+
+        §13 (s13-4) relaxed the old blanket unsafe_allow_html ban: HTML
+        may enter this stage, but only as the output of the audited pure
+        format_* helpers (which escape anything roster-derived); dynamic
+        prose stays in native widgets.  The container contract is what
+        this guard still pins."""
         import inspect
         src = inspect.getsource(app.render_results_stage)
-        assert "unsafe_allow_html" not in src
         assert "st.container(border=True" in src
         assert 'key=f"card-' in src
 
@@ -1526,47 +1530,56 @@ class TestS12Cards:
             assert f'"{slug}"' in src
 
 
-class TestS12Chips:
-    def test_full_rec_renders_four_item_chips_plus_total(self, app):
+class TestS13Chips:
+    def test_full_rec_renders_four_dot_chips(self, app):
+        """§13 (s13-4): chips are outline dot pills — the dot tone encodes
+        the box collapse (good ink / flat taupe / flag orange), hexes live
+        in _BRAND_CSS, and the label order rides the item order."""
         rec = {
             "raw_selections": [5, 4, 3, 2],
             "boxes": ["T2B", "T2B", "Neutral", "B2B"],
             "total_score": 6,
         }
-        chips = app.format_score_chips(rec)
-        assert chips.count(":green-badge[") == 2
-        assert chips.count(":gray-badge[") == 1
-        assert chips.count(":orange-badge[") == 1
-        assert ":blue-badge[Total +6]" in chips
-        # Labels ride in item order: Fit, Schedule, Willing, Recommend.
-        assert chips.index("Fit 5") < chips.index("Schedule 4") \
-            < chips.index("Willing 3") < chips.index("Recommend 2")
+        html = app.format_score_chips(rec)
+        assert html.count('class="vm-chip"') == 4
+        assert html.count("vm-dot-good") == 2
+        assert html.count("vm-dot-flat") == 1
+        assert html.count("vm-dot-flag") == 1
+        assert html.index("Fit") < html.index("Schedule") \
+            < html.index("Willing") < html.index("Recommend")
+        assert "<b>5</b>" in html and "<b>2</b>" in html
 
-    def test_failed_scorer_gets_policy_badge_never_fake_scores(self, app):
+    def test_failed_scorer_gets_policy_note_never_fake_scores(self, app):
         rec = {"raw_selections": None, "boxes": None, "total_score": None}
-        assert app.format_score_chips(rec) == (
-            ":gray-badge[Scoring unavailable — Technical by policy]"
-        )
+        html = app.format_score_chips(rec)
+        assert 'class="vm-note"' in html
+        assert "Scoring unavailable — Technical by policy" in html
+        assert "vm-chip" not in html
+        assert app.format_total_pill(rec) == ""
 
-    def test_almost_match_rec_gets_no_chips(self, app):
-        assert app.format_score_chips(
-            {"volunteer_id": "V-0001", "tier": "Almost Match", "reasoning": "x"}
-        ) == ""
+    def test_almost_match_rec_gets_no_chips_and_no_total(self, app):
+        rec = {"volunteer_id": "V-0001", "tier": "Almost Match", "reasoning": "x"}
+        assert app.format_score_chips(rec) == ""
+        assert app.format_total_pill(rec) == ""
 
-    def test_negative_total_renders_signed(self, app):
-        rec = {
-            "raw_selections": [1, 1, 1, 1],
-            "boxes": ["B2B", "B2B", "B2B", "B2B"],
-            "total_score": -4,
-        }
-        assert ":blue-badge[Total -4]" in app.format_score_chips(rec)
+    def test_total_pill_signs_and_zero(self, app):
+        """DESIGN §4: mono signed sum — +12 / -4 signed, zero unsigned."""
+        def pill(total):
+            return app.format_total_pill({
+                "raw_selections": [1, 1, 1, 1], "boxes": ["B2B"] * 4,
+                "total_score": total,
+            })
+        assert "<b>+6</b>" in pill(6)
+        assert "<b>-4</b>" in pill(-4)
+        assert "<b>0</b>" in pill(0)
+        assert 'class="vm-total"' in pill(6) and "TOTAL" in pill(6)
 
 
-class TestS12Dissent:
-    def test_dissent_event_yields_violet_badge(self, app):
+class TestS13Dissent:
+    def test_dissent_event_yields_clay_tag(self, app):
         badge = app.format_dissent_badge({"dissent": True, "text": "On second thought…"})
         assert badge is not None
-        assert badge.startswith(":violet-badge[")
+        assert 'class="vm-dissent"' in badge
         assert "tier unchanged" in badge
 
     def test_agreeing_event_yields_no_badge(self, app):
