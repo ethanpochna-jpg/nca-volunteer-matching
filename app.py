@@ -73,6 +73,28 @@ from core import graph, llm, matching, policy, reasoning, records
 # SECTION 10 — STREAMLIT USER INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# §12 aesthetics: the ONLY raw-CSS surface in the app. Everything themable
+# stays in .streamlit/config.toml; these six rules exist solely because
+# per-element styling (tier accent bars on keyed containers, container
+# padding, page gutter) has no [theme] key. Selectors hang off Streamlit's
+# documented stable `st-key-<key>` classes from st.container(key=...).
+_BRAND_CSS = """
+<style>
+div[class*="st-key-card-perfect-"]   { border-left: 4px solid #2E7D32; background: #F4FAF5; }
+div[class*="st-key-card-good-"]      { border-left: 4px solid #2563EB; background: #F3F7FE; }
+div[class*="st-key-card-technical-"] { border-left: 4px solid #B45309; background: #FDF9F1; }
+div[class*="st-key-card-almost-"]    { border-left: 4px solid #BE123C; background: #FDF3F5; }
+div[class*="st-key-card-"]           { padding: 1rem 1.25rem 1.1rem; }
+div.block-container                  { padding-top: 2.2rem; }
+</style>
+"""
+
+
+def inject_brand_css() -> None:
+    """Inject the §12 brand CSS once per rerun, right after page config."""
+    st.markdown(_BRAND_CSS, unsafe_allow_html=True)
+
+
 def main():
     """Entry point: page config, sidebar, session state, stage dispatch."""
 
@@ -81,6 +103,7 @@ def main():
         page_icon="🤝",
         layout="wide",
     )
+    inject_brand_css()
 
     st.title("🤝 Northbridge Volunteer Matching Assistant")
     st.caption(

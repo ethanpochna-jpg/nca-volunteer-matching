@@ -1456,3 +1456,13 @@ class TestS12Theme:
         assert theme["base"] == "light"
         assert theme["primaryColor"] == "#2563EB"
         assert "sidebar" in theme
+
+
+class TestS12Css:
+    def test_brand_css_covers_all_four_tier_card_slugs(self, app):
+        for slug in ("perfect", "good", "technical", "almost"):
+            assert f'st-key-card-{slug}-' in app._BRAND_CSS
+
+    def test_css_injected_once_in_main(self, app):
+        import inspect
+        assert "inject_brand_css()" in inspect.getsource(app.main)
