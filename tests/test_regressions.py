@@ -1439,14 +1439,18 @@ class TestS2LikertConstants:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# §12 — aesthetics pass (activated 2026-07-22): theme, cards, chips, dissent
+# §12/§13 — aesthetics: theme, cards, chips, dissent.  §13 (handoff reskin)
+# supersedes the §12 trust-blue look; per D13-4 each §12 guard that pinned
+# the old look is rewritten here in the same commit as the change it guards.
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestS12Theme:
+class TestS13Theme:
     def test_config_toml_exists_and_pins_the_brand_theme(self, app):
-        """Pinned light + trust blue: the public demo must look the same for
-        every viewer, so the theme lives in committed config, not viewer
-        preference."""
+        """§13 (s13-1): pinned light + warm cream/ink editorial palette — the
+        public demo must look the same for every viewer, so the theme lives
+        in committed config, not viewer preference.  Sidebar theming is
+        retired (s13-6 removes the sidebar itself); the deploy-facing
+        [client] toolbar setting must survive the theme swap."""
         import tomllib
         from pathlib import Path
         cfg_path = Path(app.__file__).parent / ".streamlit" / "config.toml"
@@ -1454,8 +1458,12 @@ class TestS12Theme:
         cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
         theme = cfg["theme"]
         assert theme["base"] == "light"
-        assert theme["primaryColor"] == "#2563EB"
-        assert "sidebar" in theme
+        assert theme["primaryColor"] == "#141413"
+        assert theme["backgroundColor"] == "#F3F0EE"
+        assert theme["secondaryBackgroundColor"] == "#FCFBFA"
+        assert theme["font"].startswith("Sofia Sans:")
+        assert "sidebar" not in theme
+        assert cfg["client"]["toolbarMode"] == "viewer"
 
 
 class TestS12Css:
