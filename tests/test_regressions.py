@@ -19,6 +19,7 @@ import sqlite3 as _sqlite3
 import uuid as _uuid
 
 import pandas as pd
+import pytest
 
 from tests.conftest import patch_llm, patch_loaders
 from tests.fixtures import (
@@ -1578,3 +1579,196 @@ class TestS12Dissent:
         import inspect
         src = inspect.getsource(app.render_results_stage)
         assert "format_dissent_badge(cached)" in src
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# §13 — s13-3: gated step nav — state machine, form lifecycle, thread fork
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestS13NavStateMachine:
+    def test_gating_table(self, app):
+        """Exhaustive HANDOFF §1 gate: step i is clickable iff i ≤ ceiling."""
+        table = [[app.tab_enabled(i, m) for i in range(3)] for m in range(3)]
+        assert table == [
+            [True, False, False],
+            [True, True, False],
+            [True, True, True],
+        ]
+
+    def test_transition_table(self, app):
+        """Full event table.  'analyzed' encodes D13-1: the ceiling drops
+        to exactly 1 even from 2 — the spec-verbatim max(cur, 1) would
+        leave a stale Recommend tab reachable after a re-run (approved
+        deviation from HANDOFF §1)."""
+        t = app.apply_transition
+        # analyzed re-locks downstream from anywhere
+        assert t("input", 0, "analyzed") == ("skills_review", 1)
+        assert t("input", 2, "analyzed") == ("skills_review", 1)
+        # confirmed always lands on results with the full ceiling
+        assert t("skills_review", 1, "confirmed") == ("results", 2)
+        assert t("skills_review", 2, "confirmed") == ("results", 2)
+        # back never moves the ceiling (sticky unlock, spec-verbatim)
+        assert t("skills_review", 1, "back") == ("input", 1)
+        assert t("skills_review", 2, "back") == ("input", 2)
+        # new_request re-locks everything from any state
+        for stage in app.STAGE_ORDER:
+            for m in range(3):
+                assert t(stage, m, "new_request") == ("input", 0)
+        # goto honors the ceiling: navigates within it, inert beyond it
+        assert t("input", 1, "goto:2") == ("input", 1)
+        assert t("results", 2, "goto:1") == ("skills_review", 2)
+        assert t("results", 2, "goto:0") == ("input", 2)
+        assert t("input", 0, "goto:0") == ("input", 0)
+
+    def test_unknown_event_raises(self, app):
+        with pytest.raises(ValueError):
+            app.apply_transition("input", 0, "teleport")
+
+    def test_results_stay_in_bounds_for_every_event(self, app):
+        events = ["analyzed", "confirmed", "back", "new_request",
+                  "goto:0", "goto:1", "goto:2"]
+        for stage in app.STAGE_ORDER:
+            for m in range(3):
+                for ev in events:
+                    new_stage, new_max = app.apply_transition(stage, m, ev)
+                    assert new_stage in app.STAGE_ORDER
+                    assert new_max in (0, 1, 2)
+
+
+class TestS13FormLifecycle:
+    def test_form_defaults_shape(self, app):
+        from datetime import date as _date
+        d = app.form_defaults()
+        assert set(d) == set(app._FORM_KEYS)
+        assert d["form_user_prompt"] == ""
+        assert d["form_certs"] == [] and d["form_languages"] == []
+        assert d["form_has_specific_date"] is False
+        assert d["form_is_recurring"] is False
+        for k in ("form_target_date", "form_notification_date",
+                  "form_recurring_end_date"):
+            assert isinstance(d[k], _date)
+
+    def test_new_request_reset_clears_form_and_pipeline_state(self, app):
+        """reset_form_state is mapping-level: a plain dict drives the real
+        function — form back to defaults, skill checkboxes dropped,
+        pipeline copies gone, reasoning replay cache emptied."""
+        ss = {
+            "form_user_prompt": "old text",
+            "form_certs": ["First Aid Certification - Current"],
+            "skill_Tutoring - Math": True,
+            "classifier_state": {"x": 1},
+            "final_state": {"y": 2},
+            "interrupt_config": {"configurable": {"checkpoint_id": "c"}},
+            "last_confirmed": ["Tutoring - Math"],
+            "reasoning_cache": {("T-1", "V-0001"): {"text": "hi"}},
+            "stage": "results", "max_reached": 2,
+            "thread_id": "T-KEEP", "graph": "GRAPH-SENTINEL",
+        }
+        app.reset_form_state(ss)
+        for k, v in app.form_defaults().items():
+            assert ss[k] == v
+        assert not [k for k in ss if str(k).startswith("skill_")]
+        for k in ("classifier_state", "final_state",
+                  "interrupt_config", "last_confirmed"):
+            assert k not in ss
+        assert ss["reasoning_cache"] == {}
+
+    def test_reset_leaves_handler_owned_keys_alone(self, app):
+        """stage / max_reached / thread_id / graph belong to
+        start_new_request, never to the mapping-level reset."""
+        ss = {"stage": "results", "max_reached": 2,
+              "thread_id": "T-KEEP", "graph": "GRAPH-SENTINEL"}
+        app.reset_form_state(ss)
+        assert ss["stage"] == "results" and ss["max_reached"] == 2
+        assert ss["thread_id"] == "T-KEEP" and ss["graph"] == "GRAPH-SENTINEL"
+
+    def test_confirm_noop_truth_table(self, app):
+        f = app.confirm_is_noop
+        assert f(["A"], ["A"], True)
+        assert f(["A", "B"], ["B", "A"], True)   # order-insensitive
+        assert f([], [], True)                   # empty-but-confirmed counts
+        assert not f(["A"], ["A", "B"], True)    # selection changed
+        assert not f(["A"], ["A"], False)        # no results present
+        assert not f(["A"], None, True)          # never confirmed on thread
+
+
+class TestS13GraphLifecycle:
+    def test_confirm_forks_from_interrupt_checkpoint(self, app, monkeypatch, tmp_path):
+        """Pins the LangGraph semantics D13-2 depends on: update_state
+        anchored at the interrupt-checkpoint config forks even a COMPLETED
+        thread and re-runs match→score→record with the edited selection.
+        If a langgraph upgrade changes fork behavior, this goes red before
+        the UI does."""
+        roster = roster_frame(make_volunteer("V-0001", "Ada"))
+        patch_loaders(monkeypatch, app, roster, assignments_frame())
+        monkeypatch.setattr(app, "call_likert_item", lambda *a: 5)
+        monkeypatch.setattr(app, "REQUESTS_DB_PATH", str(tmp_path / "requests.db"))
+        canned = app.ClassifierOutput(
+            need_sets=[app.NeedSet(count=1, description="A helper")],
+            reasoning="canned",
+        ).model_dump_json()
+        patch_llm(monkeypatch, app, [], [canned])
+
+        g = app.build_graph()
+        cfg = {"configurable": {"thread_id": "T-fork"}}
+        g.invoke(make_state(user_prompt="need a helper"), cfg)
+        snapshot = g.get_state(cfg)
+        assert snapshot.next == ("match_volunteers",)
+        anchor = snapshot.config
+
+        forked_a = g.update_state(
+            anchor, {"confirmed_skills": [], "unchecked_skills": []}
+        )
+        final_a = g.invoke(None, forked_a)
+        forked_b = g.update_state(
+            anchor,
+            {"confirmed_skills": [], "unchecked_skills": ["Photography/Media"]},
+        )
+        final_b = g.invoke(None, forked_b)
+
+        assert final_a["recommendations"] and final_b["recommendations"]
+        assert final_b["unchecked_skills"] == ["Photography/Media"]
+        rid_a = final_a["request_record"]["request_id"]
+        rid_b = final_b["request_record"]["request_id"]
+        assert rid_a != rid_b
+
+
+class TestS13NavSource:
+    """House-style source tripwires on the rewired handlers."""
+
+    def test_analyze_mints_the_thread(self, app):
+        import inspect
+        assert "uuid.uuid4" in inspect.getsource(app.render_input_stage)
+
+    def test_back_no_longer_kills_the_thread(self, app):
+        import inspect
+        src = inspect.getsource(app.render_skills_review_stage)
+        assert "uuid.uuid4" not in src
+        assert "build_graph" not in src
+
+    def test_confirm_anchors_at_interrupt_checkpoint(self, app):
+        import inspect
+        assert "interrupt_config" in inspect.getsource(app.render_skills_review_stage)
+
+    def test_new_request_owns_the_full_reset(self, app):
+        import inspect
+        helper = inspect.getsource(app.start_new_request)
+        assert "reset_form_state" in helper and "build_graph" in helper
+        assert "start_new_request()" in inspect.getsource(app.render_results_stage)
+        assert "start_new_request()" in inspect.getsource(app.render_step_nav)
+
+    def test_nav_and_keepalive_wired_in_main(self, app):
+        import inspect
+        src = inspect.getsource(app.main)
+        assert "render_step_nav()" in src
+        assert "keep_form_state_alive()" in src
+
+    def test_gates_present(self, app):
+        import inspect
+        assert "disabled=" in inspect.getsource(app.render_input_stage)
+        assert "disabled=" in inspect.getsource(app.render_step_nav)
+
+    def test_pure_navigation_never_invokes_graph(self, app):
+        import inspect
+        assert ".invoke(" not in inspect.getsource(app.render_step_nav)
+        assert ".invoke(" not in inspect.getsource(app.start_new_request)

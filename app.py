@@ -93,6 +93,42 @@ h1                  { letter-spacing: -0.025em; }
                 background: #CF4500; display: inline-block; flex: 0 0 auto; }
 .vm-eyebrow-stage { letter-spacing: 0.15em; }
 
+/* ── step nav (HANDOFF §1: floating gated pill; DESIGN §4) ────────────── */
+div[class*="st-key-step-nav"] {
+  position: sticky; top: 16px; z-index: 99;
+  background: rgba(252,251,250,.86);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(20,20,19,.08); border-radius: 999px;
+  box-shadow: rgba(0,0,0,.04) 0 4px 24px 0;
+  padding: 11px 18px 11px 24px; margin-bottom: 30px;
+}
+div[class*="st-key-step-nav"] .stButton button { border-radius: 999px; min-height: 0; }
+div[class*="st-key-step-nav"] .stButton button p { font-size: 14px; }
+div[class*="st-key-step-nav"] .stButton button code {
+  background: transparent; border: none; padding: 0 5px 0 0;
+  font-size: 11px; font-weight: 600; opacity: .72; color: inherit;
+}
+div[class*="st-key-step-nav"] .stButton button:disabled {
+  color: #c1b9af !important; border-color: rgba(20,20,19,.07) !important;
+  opacity: .5; cursor: not-allowed;
+}
+div[class*="st-key-nav-new-request"] button {
+  background: transparent; border: 1px solid rgba(20,20,19,.2);
+  border-radius: 999px;
+}
+.vm-brand  { display: flex; align-items: center; gap: 11px;
+             font-weight: 600; font-size: 16.5px; letter-spacing: -0.02em;
+             color: #141413; white-space: nowrap; }
+.vm-mark   { position: relative; width: 24px; height: 24px; flex: 0 0 auto;
+             border: 1.5px solid #141413; border-radius: 50%; display: inline-block; }
+.vm-mark i { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
+             border-radius: 50%; background: #CF4500; display: block; }
+
+/* ── stage entrance (mockup: <main> keyed by stage replays omUp) ──────── */
+@keyframes omUp { from { opacity: 0; transform: translateY(10px); }
+                  to   { opacity: 1; transform: none; } }
+div[class*="st-key-stage-"] { animation: omUp .5s cubic-bezier(.2,.7,.2,1) both; }
+
 /* ── tier cards (§12 accent bars — replaced by s13-5 neutral surfaces) ── */
 div[class*="st-key-card-perfect-"]   { border-left: 4px solid #2E7D32; background: #F4FAF5; }
 div[class*="st-key-card-good-"]      { border-left: 4px solid #2563EB; background: #F3F7FE; }
@@ -136,6 +172,124 @@ def format_results_headline(n: int) -> str:
     if n == 1:
         return "One volunteer, ranked."
     return f"{_NUM_WORDS.get(n, str(n))} volunteers, ranked."
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# §13 — GATED STEP NAV: pure state machine + form-state lifecycle (s13-3)
+# ═══════════════════════════════════════════════════════════════════════════════
+# The nav is a gated linear flow (HANDOFF §1): `stage` is where you are,
+# `max_reached` is the sticky unlock ceiling.  All transition logic lives
+# in pure module-level functions so the harness tests real behavior, not
+# source strings; the render handlers only add side effects (thread mint,
+# graph invoke, session copies) around apply_transition.
+
+STAGE_ORDER = ("input", "skills_review", "results")
+
+# Stage-1 widget session keys.  Keyed (unlike pre-§13) so Back preserves
+# the form; keep_form_state_alive() defeats Streamlit's widget cleanup.
+_FORM_KEYS = (
+    "form_user_prompt", "form_certs", "form_languages",
+    "form_has_specific_date", "form_target_date", "form_notification_date",
+    "form_is_recurring", "form_recurring_end_date",
+)
+
+
+def tab_enabled(step_index: int, max_reached: int) -> bool:
+    """HANDOFF §1 gating: a step is clickable iff it has been reached."""
+    return step_index <= max_reached
+
+
+def apply_transition(stage: str, max_reached: int, event: str) -> tuple[str, int]:
+    """§13 nav state machine → (new_stage, new_max_reached).
+
+    Events: analyzed | confirmed | back | new_request | goto:<0..2>.
+
+    D13-1 deviation from HANDOFF §1's sticky max(cur, 1): 'analyzed'
+    re-locks Recommend (ceiling exactly 1) — a fresh extraction must never
+    leave the previous run's results reachable, or a "Get reasoning" click
+    there would log events under the prior request_id.  'back' leaves the
+    ceiling untouched (reached tabs stay reachable without re-running).
+    A goto past the ceiling is inert (its tab renders disabled anyway).
+    """
+    if event == "analyzed":
+        return "skills_review", 1
+    if event == "confirmed":
+        return "results", 2
+    if event == "back":
+        return "input", max_reached
+    if event == "new_request":
+        return "input", 0
+    if event.startswith("goto:"):
+        idx = int(event.split(":", 1)[1])
+        if tab_enabled(idx, max_reached):
+            return STAGE_ORDER[idx], max_reached
+        return stage, max_reached
+    raise ValueError(f"unknown nav event: {event!r}")
+
+
+def form_defaults() -> dict:
+    """Fresh stage-1 widget defaults (dates recomputed at call time)."""
+    return {
+        "form_user_prompt": "",
+        "form_certs": [],
+        "form_languages": [],
+        "form_has_specific_date": False,
+        "form_target_date": date.today() + timedelta(days=7),
+        "form_notification_date": date.today(),
+        "form_is_recurring": False,
+        "form_recurring_end_date": date.today() + timedelta(days=90),
+    }
+
+
+def keep_form_state_alive() -> None:
+    """Seed form defaults and defeat widget cleanup, every run.
+
+    Streamlit drops session entries for widgets not rendered in a run, so
+    without this Back would blank the form.  The standard keep-alive is
+    re-assigning each key before any widget renders.  skill_* checkbox
+    keys ride along so a results→review round-trip keeps the selection.
+    """
+    for k, v in form_defaults().items():
+        st.session_state.setdefault(k, v)
+    # A kept-alive target date can fall behind date_input's min_value
+    # overnight; clamp so the widget never receives an out-of-bounds value.
+    if st.session_state["form_target_date"] < date.today():
+        st.session_state["form_target_date"] = date.today() + timedelta(days=7)
+    for k in list(st.session_state):
+        if k in _FORM_KEYS or (isinstance(k, str) and k.startswith("skill_")):
+            st.session_state[k] = st.session_state[k]
+
+
+def reset_form_state(ss) -> None:
+    """New-request reset (mapping-level so tests drive a plain dict).
+
+    Restores form defaults, drops the extraction's skill checkboxes, and
+    clears the pipeline session copies plus the reasoning replay cache
+    (the append-only DB event log is the durable record).  Handler-owned
+    keys — stage, max_reached, thread_id, graph — are deliberately not
+    touched here; start_new_request() owns those side effects.
+    """
+    for k, v in form_defaults().items():
+        ss[k] = v
+    for k in [k for k in list(ss) if isinstance(k, str) and k.startswith("skill_")]:
+        del ss[k]
+    for k in ("classifier_state", "final_state", "interrupt_config", "last_confirmed"):
+        ss.pop(k, None)
+    ss["reasoning_cache"] = {}
+
+
+def confirm_is_noop(confirmed: list, last_confirmed, final_present: bool) -> bool:
+    """D13-2: an unchanged re-confirm with results present just navigates.
+
+    Guards a completed thread against duplicate scorer waves and duplicate
+    request records from idle re-clicks; any change in the checked set
+    (order-insensitive) re-runs the pipeline.
+    """
+    return (
+        final_present
+        and last_confirmed is not None
+        and set(confirmed) == set(last_confirmed)
+    )
 
 
 # §12 score chips: raw 1–5 selections rendered as theme-palette badges.
@@ -183,6 +337,64 @@ def format_dissent_badge(event: dict) -> str | None:
     return None
 
 
+def start_new_request() -> None:
+    """Full reset (HANDOFF §1 "New request"): clear, re-lock, new thread.
+
+    The graph rebuild doubles as the memory-reclaim point — a fresh
+    InMemorySaver frees every thread accumulated across Analyze runs.
+    Shared by the header ghost button and the stage-3 primary.
+    """
+    reset_form_state(st.session_state)
+    st.session_state["thread_id"] = str(uuid.uuid4())
+    st.session_state["graph"] = graph.build_graph()
+    st.session_state["stage"], st.session_state["max_reached"] = apply_transition(
+        st.session_state["stage"], st.session_state["max_reached"], "new_request"
+    )
+    st.rerun()
+
+
+def render_step_nav() -> None:
+    """§13 gated step-nav pill: brand mark, three tabs, New-request ghost.
+
+    Active tab = type="primary" (the ink theme renders the filled pill);
+    locked tabs are disabled= — inert natively, grayed via _BRAND_CSS.
+    Pure navigation only ever touches stage/max_reached; the graph is
+    never invoked from here (render stages read session copies only).
+    """
+    with st.container(key="step-nav"):
+        cols = st.columns(
+            [2.1, 1.2, 1.05, 1.35, 1.9, 1.25], vertical_alignment="center"
+        )
+        with cols[0]:
+            st.markdown(
+                '<div class="vm-brand"><span class="vm-mark"><i></i></span>'
+                "Volunteer Matching</div>",
+                unsafe_allow_html=True,
+            )
+        for i, label in enumerate(("Describe", "Review", "Recommend")):
+            with cols[i + 1]:
+                active = STAGE_ORDER[i] == st.session_state["stage"]
+                if st.button(
+                    f"`0{i + 1}` {label}",
+                    key=f"nav-step-{i}",
+                    type="primary" if active else "secondary",
+                    disabled=not tab_enabled(i, st.session_state["max_reached"]),
+                    use_container_width=True,
+                ):
+                    new_stage, new_max = apply_transition(
+                        st.session_state["stage"],
+                        st.session_state["max_reached"],
+                        f"goto:{i}",
+                    )
+                    if new_stage != st.session_state["stage"]:
+                        st.session_state["stage"] = new_stage
+                        st.session_state["max_reached"] = new_max
+                        st.rerun()
+        with cols[5]:
+            if st.button("New request", key="nav-new-request", use_container_width=True):
+                start_new_request()
+
+
 def main():
     """Entry point: page config, sidebar, session state, stage dispatch."""
 
@@ -213,10 +425,13 @@ def main():
     # ── Session state initialization ───────────────────────────────────
     if "stage" not in st.session_state:
         st.session_state["stage"] = "input"
+    if "max_reached" not in st.session_state:
+        st.session_state["max_reached"] = 0
     if "graph" not in st.session_state:
         st.session_state["graph"] = graph.build_graph()
     if "thread_id" not in st.session_state:
         st.session_state["thread_id"] = str(uuid.uuid4())
+    keep_form_state_alive()
 
     # ── Verify data files exist ────────────────────────────────────────
     if not os.path.exists(matching.ROSTER_PATH):
@@ -238,13 +453,20 @@ def main():
         with records.db_connect() as conn:
             seed_database(conn)
 
-    # ── Stage dispatch ─────────────────────────────────────────────────
+    # ── Gated step nav + stage dispatch ────────────────────────────────
+    # Each stage renders inside a stage-keyed container: a stage change
+    # swaps the key, Streamlit mounts fresh DOM, and the omUp entrance
+    # replays — the Streamlit equivalent of the mockup's keyed <main>.
+    render_step_nav()
     if st.session_state["stage"] == "input":
-        render_input_stage()
+        with st.container(key="stage-input"):
+            render_input_stage()
     elif st.session_state["stage"] == "skills_review":
-        render_skills_review_stage()
+        with st.container(key="stage-review"):
+            render_skills_review_stage()
     elif st.session_state["stage"] == "results":
-        render_results_stage()
+        with st.container(key="stage-results"):
+            render_results_stage()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -262,8 +484,13 @@ def render_input_stage():
         "Claude extracts a structured need set; you confirm it on the next step."
     )
 
+    # §13: stage-1 widgets are keyed so Back preserves the form (the
+    # keep-alive in main() defeats widget cleanup); New request clears
+    # them through reset_form_state.  Defaults live in the session seed —
+    # never also in a value= param (Streamlit warns on the double source).
     user_prompt = st.text_area(
         "What do you need?",
+        key="form_user_prompt",
         placeholder=(
             "Example: I need 2 volunteers for Saturday morning pantry — one "
             "should speak Spanish for intake, and both need to be able to do "
@@ -289,6 +516,7 @@ def render_input_stage():
             form_certs = st.multiselect(
                 "Required Certifications",
                 options=policy.VALID_CERTS_CLEARABLE,
+                key="form_certs",
                 help="Only volunteers with ALL selected certifications will match. "
                      "Policy-mandated certs (e.g., Background Check for tutoring) "
                      "are added automatically based on skills.",
@@ -298,6 +526,7 @@ def render_input_stage():
             form_languages = st.multiselect(
                 "Required Languages",
                 options=policy.VALID_LANGUAGES,
+                key="form_languages",
                 help="Only volunteers who speak ALL selected languages will match.",
             )
 
@@ -307,32 +536,42 @@ def render_input_stage():
         col_date, col_notify = st.columns(2)
 
         with col_date:
-            has_specific_date = st.checkbox("I have a specific target date")
+            has_specific_date = st.checkbox(
+                "I have a specific target date", key="form_has_specific_date"
+            )
             target_date = None
             if has_specific_date:
                 target_date = st.date_input(
                     "Target Date",
-                    value=date.today() + timedelta(days=7),
+                    key="form_target_date",
                     min_value=date.today(),
                 )
 
         with col_notify:
             notification_date = st.date_input(
                 "Notification Date (when volunteers will be contacted)",
-                value=date.today(),
+                key="form_notification_date",
             )
 
         # ── Recurring toggle ───────────────────────────────────────────
-        is_recurring = st.checkbox("This is a recurring need")
+        is_recurring = st.checkbox("This is a recurring need", key="form_is_recurring")
         recurring_end_date = None
         if is_recurring:
             recurring_end_date = st.date_input(
                 "Recurring until",
-                value=date.today() + timedelta(days=90),
+                key="form_recurring_end_date",
             )
 
     # ── Submit ─────────────────────────────────────────────────────────
-    if st.button("Analyze request →", type="primary", use_container_width=True):
+    # HANDOFF §1 empty-start gate: disabled until the prompt is non-empty
+    # (the widget return value is current at button-render time; the
+    # in-handler warning stays as defense in depth).
+    if st.button(
+        "Analyze request →",
+        type="primary",
+        use_container_width=True,
+        disabled=not user_prompt.strip(),
+    ):
         if not user_prompt.strip():
             st.warning("Please describe your volunteer need before submitting.")
             return
@@ -365,8 +604,12 @@ def render_input_stage():
             "recurring_end_date": str(recurring_end_date) if recurring_end_date else None,
         }
 
-        config = {"configurable": {"thread_id": st.session_state["thread_id"]}}
-        st.session_state["graph_config"] = config
+        # §13: every Analyze runs on a fresh thread of the shared graph
+        # (the old Back-handler re-mint moved here).  Mint into a local
+        # and commit to session only on success, so a failed classify
+        # leaves the previous run's reached tabs fully consistent.
+        thread_id = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
 
         with st.spinner("Analyzing your request..."):
             try:
@@ -375,10 +618,23 @@ def render_input_stage():
                 st.error(f"Classification failed: {e}")
                 return
 
-        # Retrieve state after classifier completes (graph is paused)
+        # Retrieve state after classifier completes (graph is paused).
+        # snapshot.config carries the interrupt checkpoint_id — the anchor
+        # Confirm forks from (D13-2), stable across later re-confirms.
         snapshot = st.session_state["graph"].get_state(config)
+        st.session_state["thread_id"] = thread_id
+        st.session_state["interrupt_config"] = snapshot.config
         st.session_state["classifier_state"] = snapshot.values
-        st.session_state["stage"] = "skills_review"
+        # D13-1: a fresh extraction invalidates downstream results — pop
+        # them and re-lock Recommend via the 'analyzed' transition; the
+        # skill checkboxes restart unchecked for the new extraction.
+        st.session_state.pop("final_state", None)
+        st.session_state.pop("last_confirmed", None)
+        for k in [k for k in st.session_state if isinstance(k, str) and k.startswith("skill_")]:
+            del st.session_state[k]
+        st.session_state["stage"], st.session_state["max_reached"] = apply_transition(
+            st.session_state["stage"], st.session_state["max_reached"], "analyzed"
+        )
         st.rerun()
 
 
@@ -467,7 +723,9 @@ def render_skills_review_stage():
             cols = st.columns(min(len(extracted), 3))
             for i, skill in enumerate(extracted):
                 with cols[i % len(cols)]:
-                    if st.checkbox(skill, value=False, key=f"skill_{skill}"):
+                    # No value= — the keep-alive owns the session entry
+                    # (a double default would warn on every rerun).
+                    if st.checkbox(skill, key=f"skill_{skill}"):
                         confirmed.append(skill)
 
     # Compute unchecked skills for soft-preference forwarding
@@ -488,18 +746,35 @@ def render_skills_review_stage():
 
     with col_back:
         if st.button("← Back", use_container_width=True):
-            st.session_state["stage"] = "input"
-            st.session_state["thread_id"] = str(uuid.uuid4())
-            st.session_state["graph"] = graph.build_graph()
+            # §13: Back preserves the paused thread — reached tabs must
+            # stay valid (the old thread re-mint moved to the Analyze
+            # handler; the full reset lives in start_new_request).
+            st.session_state["stage"], st.session_state["max_reached"] = apply_transition(
+                st.session_state["stage"], st.session_state["max_reached"], "back"
+            )
             st.rerun()
 
     with col_confirm:
         if st.button("Confirm & match →", type="primary", use_container_width=True):
-            config = st.session_state["graph_config"]
+            if confirm_is_noop(
+                confirmed,
+                st.session_state.get("last_confirmed"),
+                "final_state" in st.session_state,
+            ):
+                # D13-2: identical selection with results present — just
+                # navigate; no duplicate scorer wave, no duplicate record.
+                st.session_state["stage"], st.session_state["max_reached"] = apply_transition(
+                    st.session_state["stage"], st.session_state["max_reached"], "confirmed"
+                )
+                st.rerun()
 
-            # Update graph state with confirmed skills AND unchecked (soft)
-            st.session_state["graph"].update_state(
-                config,
+            # D13-2: anchor at the interrupt checkpoint so a re-confirm on
+            # a completed thread forks from the breakpoint (LangGraph time
+            # travel) instead of appending to the finished run.  On the
+            # first confirm the anchor IS the latest checkpoint, so this
+            # is byte-equivalent to the pre-§13 thread-only update.
+            forked = st.session_state["graph"].update_state(
+                st.session_state["interrupt_config"],
                 {
                     "confirmed_skills": confirmed,
                     "unchecked_skills": unchecked,
@@ -508,13 +783,22 @@ def render_skills_review_stage():
 
             with st.spinner("Matching volunteers and generating recommendations..."):
                 try:
-                    final_state = st.session_state["graph"].invoke(None, config)
+                    final_state = st.session_state["graph"].invoke(None, forked)
                 except Exception as e:
                     st.error(f"Matching/recommendation failed: {e}")
                     return
 
+            # A re-run replaces this thread's results; drop its cached
+            # reasoning replays (the DB event log keeps the history).
+            cache = st.session_state.setdefault("reasoning_cache", {})
+            for ck in [ck for ck in cache if ck[0] == st.session_state["thread_id"]]:
+                del cache[ck]
+
             st.session_state["final_state"] = final_state
-            st.session_state["stage"] = "results"
+            st.session_state["last_confirmed"] = list(confirmed)
+            st.session_state["stage"], st.session_state["max_reached"] = apply_transition(
+                st.session_state["stage"], st.session_state["max_reached"], "confirmed"
+            )
             st.rerun()
 
 
@@ -757,10 +1041,7 @@ def render_results_stage():
     # ── New request button ─────────────────────────────────────────────
     st.divider()
     if st.button("Start a new request →", type="primary", use_container_width=True):
-        st.session_state["stage"] = "input"
-        st.session_state["thread_id"] = str(uuid.uuid4())
-        st.session_state["graph"] = graph.build_graph()
-        st.rerun()
+        start_new_request()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
