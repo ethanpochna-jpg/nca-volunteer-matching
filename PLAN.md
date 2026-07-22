@@ -503,7 +503,7 @@ Superseded visually by §13 the same day; §12's engineering (keyed-container
 CSS pattern, pure format helpers, config-toml theming) is the foundation
 §13 builds on.
 
-## 13. ACTIVE — handoff reskin (activated by Ethan 2026-07-22)
+## 13. DONE — handoff reskin (activated and executed 2026-07-22)
 
 Claude Design delivered a replacement visual system in the outer-dir
 `handoff/` folder: `HANDOFF.md` (behavior spec + Streamlit mapping),
@@ -532,14 +532,27 @@ Decisions (locked by Ethan 2026-07-22):
 | D13-4 | The §12 guard tests pin the superseded look; each colliding test is rewritten to the new spec **in the same commit** as the change it guards. The Phase-3 behavior guards are untouched and stay binding. |
 
 Work items (one commit each, prefix `s13-N`):
-- [ ] s13-1 repin theme to warm cream/ink editorial palette
-- [ ] s13-2 strip emoji and retitle stages with eyebrow headers
-- [ ] s13-3 gated step nav and sticky stage state machine
-- [ ] s13-4 score chips, total pill, and dissent tag as dot pills
-- [ ] s13-5 rec cards with ramp tier headers and neutral surfaces
-- [ ] s13-6 replace sidebar with full-bleed ink footer
-- [ ] s13-7 stage 1 and 2 panels, skill chips, need-set cards
+- [x] s13-1 repin theme to warm cream/ink editorial palette
+- [x] s13-2 strip emoji and retitle stages with eyebrow headers
+- [x] s13-3 gated step nav and sticky stage state machine
+- [x] s13-4 score chips, total pill, and dissent tag as dot pills
+- [x] s13-5 rec cards with ramp tier headers and neutral surfaces
+- [x] s13-6 replace sidebar with full-bleed ink footer
+- [x] s13-7 stage 1 and 2 panels, skill chips, need-set cards
+  (+ two browser-pass fix commits: 1.60 checkbox/alert DOM selectors,
+  :has() hoisted off the subject compound)
 
-**Exit:** suite green at every commit; full local browser pass covering
-the do-not-break checklist and the gated-nav state machine (incl. D13-1
-re-lock and D13-2 no-op skip); pushed and re-verified on the live URL.
+**Exit — met 2026-07-22** (commits 3f330ea..a0bbcb9, 141-test suite green
+at every commit): full local browser pass covered the do-not-break
+checklist and the gated-nav state machine end-to-end against live models —
+empty-start gate, tab locking/unlocking, D13-1 re-lock on re-Analyze
+(verified with a second extraction), D13-2 no-op skip (request count
+unchanged) and changed-selection fork (new request_id, distinct
+confirmed_skills_json rows), Back-preserves-form, New-request full reset,
+reasoning well + event-log row, fail-closed cert pills (pantry → Food
+Safety; youth tutoring → Background Check + Child Safety). Re-verified on
+nca-volunteer-matching.streamlit.app after push: cream canvas, 450 body,
+Sofia Sans fetched, sticky nav pill, locked tabs, ink footer 34px radii,
+no horizontal scroll. Known cosmetic caveat: the checked skill-chip ink
+fill relies on :has(:checked) invalidation — correct in current desktop
+browsers; spot-check visually on real Chrome.
